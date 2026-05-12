@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from fastapi import Depends, Header, HTTPException, status
 
-from models.auth import LoginRequest, SignUpRequest
+from schemas.auth_schemas import LoginRequest, SignUpRequest
 from models.user import User
 
 load_dotenv()

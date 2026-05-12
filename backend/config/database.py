@@ -33,7 +33,7 @@ db_url = sanitize_db_url(DATABASE_URL)
 async def init_db() -> None:
     await Tortoise.init(
         db_url=db_url,
-        modules={"models": ["models.user", "models.document"]},
+        modules={"models": ["models.user", "models.form_flow"]},
     )
     await Tortoise.generate_schemas()
 
