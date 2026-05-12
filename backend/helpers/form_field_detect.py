@@ -3,41 +3,50 @@ from typing import Any
 
 
 def _normalize_key(inner: str) -> str:
-    inner = inner.strip().replace("-", "_")
-    parts = re.split(r"\s+", inner)
-    return "_".join(p.lower() for p in parts if p)
+    s = inner.strip().replace("-", "_")
+    s = re.sub(r"[,;]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    parts = [p for p in s.split(" ") if p]
+    return "_".join(p.lower().strip(".,'") for p in parts)
 
 
-def _label_from_key(key: str, inner: str) -> str:
-    inner = inner.strip()
-    if inner and not inner.replace(" ", "_").lower() == key:
-        return inner.title() if inner.isupper() or "_" in inner else inner
+def _label_from_inner(inner: str, key: str) -> str:
+    """Form label: prefer text as written inside the braces."""
+    s = inner.strip()
+    if s:
+        return s
     return key.replace("_", " ").title()
 
 
 def detect_dynamic_fields(text: str) -> list[dict[str, Any]]:
-    """Find placeholders: {{ field_name }}, [[ FIELD_NAME ]], {single_token}."""
-    patterns: list[tuple[re.Pattern[str], str]] = [
-        (re.compile(r"\{\{\s*([a-zA-Z0-9_\s-]+?)\s*\}\}"), "mustache"),
-        (re.compile(r"\[\[\s*([A-Z0-9_\s-]+?)\s*\]\]"), "brackets"),
-        (re.compile(r"(?<!\{)\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}(?!\})"), "brace"),
-    ]
+    """Detect only ``{{ field_name }}`` placeholders (double curly braces).
 
-    merged: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
+    Each **distinct** ``{{...}}`` string becomes its own form field so spelling and
+    casing differences (e.g. ``{{Client Name}}`` vs ``{{Client name}}``) are separate.
+    The exact ``{{...}}`` substring is what merge replaces.
 
-    for rx, _kind in patterns:
-        for m in rx.finditer(text):
-            raw_full = m.group(0)
-            inner = m.group(1)
-            key = _normalize_key(inner)
-            if not key:
-                continue
-            label = _label_from_key(key, inner)
-            if key not in merged:
-                merged[key] = {"key": key, "label": label, "placeholders": []}
-                order.append(key)
-            if raw_full not in merged[key]["placeholders"]:
-                merged[key]["placeholders"].append(raw_full)
+    If the same ``{{...}}`` text appears multiple times, one field still fills every
+    occurrence (same replacement string).
+    """
+    rx = re.compile(r"\{\{\s*([a-zA-Z0-9_,\s-]+?)\s*\}\}")
+    rows: list[dict[str, Any]] = []
+    raw_assigned: set[str] = set()
+    base_seq: dict[str, int] = {}
 
-    return [merged[k] for k in order]
+    for m in rx.finditer(text):
+        raw_full = m.group(0)
+        inner = m.group(1)
+        base = _normalize_key(inner)
+        if not base:
+            continue
+        if raw_full in raw_assigned:
+            continue
+
+        base_seq[base] = base_seq.get(base, 0) + 1
+        n = base_seq[base]
+        key = base if n == 1 else f"{base}_{n}"
+        label = _label_from_inner(inner, key)
+        raw_assigned.add(raw_full)
+        rows.append({"key": key, "label": label, "placeholders": [raw_full]})
+
+    return rows

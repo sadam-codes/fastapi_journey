@@ -105,11 +105,14 @@ async def signup_user(payload: SignUpRequest) -> dict:
         name=payload.name,
         email=payload.email.lower(),
         password_hash=password_hash,
-        role=payload.role,
+        role=User.ROLE_USER,
     )
 
+    token = create_access_token(user.id, user.email, user.role)
     return {
         "message": "Signup successful",
+        "token": token,
+        "token_type": "bearer",
         "user": {
             "id": user.id,
             "name": user.name,

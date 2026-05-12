@@ -6,6 +6,7 @@ from models.user import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 async def signup(payload: SignUpRequest):
     return await signup_user(payload)
@@ -28,15 +29,8 @@ async def admin_only(
     return {"message": "Welcome admin", "user": user}
 
 
-@router.get("/paralegal-or-attorney")  # type: ignore
-async def paralegal_or_attorney(
-    user: dict = Depends(require_roles([User.ROLE_PARALEGAL, User.ROLE_ATTORNEY])),
+@router.get("/user")
+async def user_only(
+    user: dict = Depends(require_roles([User.ROLE_USER])),
 ):
-    return {"message": "Welcome legal team", "user": user}
-
-
-@router.get("/client")
-async def client_only(
-    user: dict = Depends(require_roles([User.ROLE_CLIENT])),
-):
-    return {"message": "Welcome client", "user": user}
+    return {"message": "Welcome user", "user": user}

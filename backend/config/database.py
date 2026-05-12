@@ -18,8 +18,6 @@ def sanitize_db_url(url: str) -> str:
     normalized_scheme = scheme_map.get(parsed.scheme.lower(), parsed.scheme.lower())
     query_items = [(k, v) for k, v in parse_qsl(parsed.query) if k.lower() != "pgbouncer"]
     query_map = {k: v for k, v in query_items}
-    # PgBouncer in transaction/statement mode is incompatible with prepared statements.
-    # Disabling asyncpg statement cache prevents DuplicatePreparedStatementError.
     query_map["statement_cache_size"] = "0"
     return urlunparse(parsed._replace(scheme=normalized_scheme, query=urlencode(query_map)))
 

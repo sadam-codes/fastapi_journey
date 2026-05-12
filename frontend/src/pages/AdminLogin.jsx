@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api, setToken } from '../api'
+import PasswordField from '../components/PasswordField.jsx'
+import {
+  btnPrimaryClass,
+  GlassCard,
+  UserAreaLayout,
+  userAreaInputClass,
+} from '../components/UserAreaLayout.jsx'
 
 export default function AdminLogin() {
   const nav = useNavigate()
@@ -25,70 +32,78 @@ export default function AdminLogin() {
         method: 'POST',
         body: { email, password },
       })
-      if (data.user?.role !== 'admin') {
-        setErr('This account is not an admin. Use the end user login instead.')
-        return
-      }
       setToken(data.token)
-      nav('/admin')
+      const role = data.user?.role
+      if (role === 'admin') nav('/admin/upload')
+      else if (role === 'user') nav('/user/forms')
+      else setErr('This account has an unsupported role. Ask your administrator to fix it in the database.')
     } catch (ex) {
       setErr(ex.message)
     }
   }
 
-  const inputClass =
-    'mt-1.5 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm outline-none ring-violet-500/40 focus:border-violet-500 focus:ring-2 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100'
-
   return (
-    <div className="mx-auto max-w-sm px-5 py-10 sm:px-8">
-      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-        Admin login
-      </h1>
-      {banner && (
-        <p className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
-          {banner}
+    <UserAreaLayout>
+      <div className="mb-8 text-center">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Administrator</p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Admin sign in</h1>
+        <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-600">
+          Manage templates and placeholders. Standard users are redirected to the forms app after login.
         </p>
-      )}
-      <form className="mt-6 flex flex-col gap-4" onSubmit={onSubmit}>
-        <label className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
-          Email
-          <input
-            type="email"
-            autoComplete="username"
-            className={inputClass}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </label>
-        <label className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
-          Password
-          <input
-            type="password"
-            autoComplete="current-password"
-            className={inputClass}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </label>
-        {err && <p className="text-sm text-red-600 dark:text-red-400">{err}</p>}
-        <button
-          type="submit"
-          className="rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 dark:focus:ring-offset-zinc-900"
-        >
-          Sign in
-        </button>
-      </form>
-      <p className="mt-8 text-sm text-zinc-500">
-        <Link to="/signup?role=admin" className="text-violet-600 hover:underline dark:text-violet-400">
-          Create admin account
-        </Link>
-        {' · '}
-        <Link to="/" className="text-violet-600 hover:underline dark:text-violet-400">
-          Home
-        </Link>
-      </p>
-    </div>
+      </div>
+
+      <GlassCard>
+        {banner && (
+          <p className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900">
+            {banner}
+          </p>
+        )}
+        <form className="flex flex-col gap-5" onSubmit={onSubmit}>
+          <label className="text-sm font-medium text-slate-800">
+            Email
+            <input
+              type="email"
+              autoComplete="username"
+              className={userAreaInputClass}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              placeholder="you@organization.com"
+            />
+          </label>
+          <label className="text-sm font-medium text-slate-800">
+            Password
+            <PasswordField
+              inputClassName={userAreaInputClass}
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              placeholder="Your password"
+            />
+          </label>
+          {err && (
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
+          )}
+          <button type="submit" className={`mt-1 ${btnPrimaryClass}`}>
+            Sign in
+          </button>
+        </form>
+
+        <p className="mt-8 text-center text-sm text-slate-600">
+          <Link to="/signup" className="font-semibold text-indigo-600 hover:text-indigo-500">
+            Create account
+          </Link>
+          <span className="text-slate-400"> · </span>
+          <Link to="/user/login" className="font-semibold text-indigo-600 hover:text-indigo-500">
+            User login
+          </Link>
+          <span className="text-slate-400"> · </span>
+          <Link to="/" className="font-semibold text-indigo-600 hover:text-indigo-500">
+            Home
+          </Link>
+        </p>
+      </GlassCard>
+    </UserAreaLayout>
   )
 }

@@ -1,0 +1,199 @@
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { getToken } from '../api'
+
+const apiBase = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+
+const sdkPromises = new Map()
+
+function loadSdkOnce(sdkUrl) {
+  if (typeof window !== 'undefined' && window.DocsAPI) {
+    return Promise.resolve()
+  }
+  if (!sdkPromises.has(sdkUrl)) {
+    sdkPromises.set(
+      sdkUrl,
+      new Promise((resolve, reject) => {
+        const esc = sdkUrl.replace(/"/g, '\\"')
+        const existing = document.querySelector(`script[src="${esc}"]`)
+        if (existing && window.DocsAPI) {
+          resolve()
+          return
+        }
+        const s = document.createElement('script')
+        s.src = sdkUrl
+        s.async = true
+        s.onload = () => resolve()
+        s.onerror = () => {
+          sdkPromises.delete(sdkUrl)
+          reject(new Error('Could not load OnlyOffice script. Check Document Server URL.'))
+        }
+        document.head.appendChild(s)
+      }),
+    )
+  }
+  return sdkPromises.get(sdkUrl)
+}
+
+async function fetchBootstrap(templateId, mode, admin) {
+  const path = admin
+    ? `/forms/admin/templates/${templateId}/onlyoffice/bootstrap`
+    : `/forms/templates/${templateId}/onlyoffice/bootstrap`
+  const res = await fetch(`${apiBase}${path}?mode=${encodeURIComponent(mode)}`, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+    cache: 'no-store',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const d = data.detail
+    const msg = Array.isArray(d)
+      ? d.map((x) => (typeof x === 'object' && x.msg ? x.msg : String(x))).join(', ')
+      : d || res.statusText
+    throw new Error(msg || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+/**
+ * ONLYOFFICE Docs editor or viewer for .docx templates.
+ */
+export default function OnlyOfficeDocx({
+  templateId,
+  mode,
+  admin,
+  revision = 0,
+  className = '',
+  onReady,
+  onError,
+}) {
+  const rid = useId().replace(/:/g, '')
+  const containerId = useMemo(
+    () => `oo_${templateId}_${mode}_${revision}_${rid}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
+    [templateId, mode, revision, rid],
+  )
+  const hostRef = useRef(null)
+  const editorRef = useRef(null)
+  const onReadyRef = useRef(onReady)
+  const onErrorRef = useRef(onError)
+
+  useEffect(() => {
+    onReadyRef.current = onReady
+    onErrorRef.current = onError
+  }, [onReady, onError])
+
+  const [phase, setPhase] = useState('loading')
+  const [hint, setHint] = useState('')
+
+  const tearDown = useCallback(() => {
+    const ed = editorRef.current
+    editorRef.current = null
+    if (ed && typeof ed.destroyEditor === 'function') {
+      try {
+        ed.destroyEditor()
+      } catch {
+        /* ignore */
+      }
+    }
+    const el = hostRef.current
+    if (el) {
+      el.innerHTML = ''
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      setPhase('loading')
+      setHint('')
+      tearDown()
+
+      try {
+        const boot = await fetchBootstrap(templateId, mode, admin)
+        if (cancelled) return
+
+        if (!boot.available) {
+          setPhase('unavailable')
+          setHint(boot.message || 'OnlyOffice is not configured.')
+          return
+        }
+
+        if (!boot.sdkUrl || !boot.config) {
+          setPhase('unavailable')
+          setHint('Invalid bootstrap response from server.')
+          return
+        }
+
+        await loadSdkOnce(boot.sdkUrl)
+        if (cancelled) return
+        if (!window.DocsAPI) {
+          throw new Error('OnlyOffice API not available after loading script.')
+        }
+
+        const el = hostRef.current
+        if (!el) return
+        el.innerHTML = `<div id="${containerId}" class="h-full w-full min-h-0" style="height:100%"></div>`
+
+        const cfg = JSON.parse(JSON.stringify(boot.config))
+        cfg.events = {
+          onDocumentReady: () => {
+            onReadyRef.current?.()
+          },
+          onError: (event) => {
+            const msg = event?.data || event?.message || 'OnlyOffice error'
+            onErrorRef.current?.(String(msg))
+          },
+        }
+        if (boot.token) {
+          cfg.token = boot.token
+        }
+
+        const editor = new window.DocsAPI.DocEditor(containerId, cfg)
+        editorRef.current = editor
+        setPhase('ready')
+      } catch (e) {
+        if (cancelled) return
+        const msg = e?.message || String(e)
+        setPhase('error')
+        setHint(msg)
+        onErrorRef.current?.(msg)
+      }
+    }
+
+    run()
+    return () => {
+      cancelled = true
+      tearDown()
+    }
+  }, [templateId, mode, admin, revision, containerId, tearDown])
+
+  return (
+    <div
+      className={`relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-slate-50 shadow-inner ${className}`}
+    >
+      {phase === 'loading' && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white/85 backdrop-blur-[2px]">
+          <div
+            className="h-9 w-9 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600"
+            aria-hidden
+          />
+          <p className="text-sm font-medium text-slate-600">Opening document…</p>
+        </div>
+      )}
+      {phase === 'unavailable' && (
+        <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 bg-gradient-to-b from-amber-50/90 to-white p-8 text-center">
+          <p className="text-sm font-semibold text-amber-950">OnlyOffice not available</p>
+          <p className="max-w-md text-sm leading-relaxed text-amber-900/90">{hint}</p>
+        </div>
+      )}
+      {phase === 'error' && (
+        <div className="flex min-h-[220px] items-center justify-center p-6">
+          <p className="max-w-lg text-center text-sm text-red-800">{hint}</p>
+        </div>
+      )}
+      <div
+        ref={hostRef}
+        className={`min-h-0 flex-1 basis-0 overflow-hidden w-full ${phase === 'ready' || phase === 'loading' ? '' : 'hidden'}`}
+      />
+    </div>
+  )
+}

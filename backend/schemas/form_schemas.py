@@ -29,6 +29,16 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class OnlyOfficeBootstrapResponse(BaseModel):
+    """Client loads sdkUrl script, then new DocsAPI.DocEditor(divId, { ...config, token })."""
+
+    available: bool
+    message: str | None = None
+    sdkUrl: str | None = None
+    config: dict[str, Any] | None = None
+    token: str | None = None
+
+
 class SubmitBody(BaseModel):
     answers: dict[str, str] = Field(default_factory=dict)
 
