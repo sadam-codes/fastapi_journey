@@ -46,6 +46,7 @@ function buildFormRows(fieldsSchema, answers) {
       fieldKey,
       label: (f.label && String(f.label).trim()) || fieldKey,
       placeholders: Array.isArray(f.placeholders) ? f.placeholders : [],
+      input_type: (f.input_type && String(f.input_type).trim()) || 'text',
       value: ans[fieldKey] ?? '',
     })
   })
@@ -59,6 +60,7 @@ function buildFormRows(fieldsSchema, answers) {
       fieldKey: k,
       label: k,
       placeholders: [],
+      input_type: 'text',
       value: ans[k] ?? '',
     })
   }
@@ -190,18 +192,31 @@ export default function AdminSubmissionDetail() {
           <div className="mt-6 flex flex-col gap-5">
             {formRows.map((r) => {
               const val = r.value ?? ''
-              const multiline = val.includes('\n') || val.length > 180
+              const isDataUrlImg = typeof val === 'string' && val.startsWith('data:image/')
+              const multiline = !isDataUrlImg && (val.includes('\n') || val.length > 180)
               const tokenHint = r.placeholders?.length ? r.placeholders.join(' · ') : ''
+              const typeHint = r.input_type && r.input_type !== 'text' ? r.input_type : ''
               return (
                 <div key={r.reactKey} className="text-sm font-medium text-slate-800">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span>{r.label}</span>
-                    <span className="text-xs font-normal text-slate-400">Key: {r.fieldKey}</span>
+                    <span className="text-xs font-normal text-slate-400">
+                      Key: {r.fieldKey}
+                      {typeHint ? ` · ${typeHint}` : ''}
+                    </span>
                   </div>
                   {tokenHint ? (
                     <p className="mt-0.5 text-xs font-normal text-slate-500">In document: {tokenHint}</p>
                   ) : null}
-                  {multiline ? (
+                  {isDataUrlImg ? (
+                    <div className="mt-2">
+                      <img
+                        src={val}
+                        alt={`${r.label} — signature`}
+                        className="max-h-44 max-w-full rounded-lg border border-slate-200 bg-white object-contain shadow-sm"
+                      />
+                    </div>
+                  ) : multiline ? (
                     <textarea
                       readOnly
                       value={val}

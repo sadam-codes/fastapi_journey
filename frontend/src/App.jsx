@@ -5,6 +5,7 @@ import AdminSubmissionDetail from './pages/AdminSubmissionDetail.jsx'
 import AdminSubmissionsList from './pages/AdminSubmissionsList.jsx'
 import AdminTemplateDetail, {
   AdminTemplateEditTab,
+  AdminTemplateFieldsTab,
   AdminTemplatePreviewTab,
 } from './pages/AdminTemplateDetail.jsx'
 import AdminTemplatesList from './pages/AdminTemplatesList.jsx'
@@ -18,7 +19,7 @@ import Signup from './pages/Signup.jsx'
 
 export default function App() {
   return (
-    <div className="min-h-svh bg-slate-100 text-slate-900 antialiased mx-auto container max-w-7xl">
+    <div className="min-h-svh bg-slate-100 text-slate-900 antialiased mx-auto container max-w-5xl">
       <Routes>
         <Route path="/" element={<Navigate to="/user/login" replace />} />
         <Route path="/home" element={<Home />} />
@@ -34,6 +35,7 @@ export default function App() {
             <Route index element={<Navigate to="preview" replace />} />
             <Route path="preview" element={<AdminTemplatePreviewTab />} />
             <Route path="edit" element={<AdminTemplateEditTab />} />
+            <Route path="fields" element={<AdminTemplateFieldsTab />} />
           </Route>
         </Route>
         <Route path="/user/login" element={<UserLogin />} />

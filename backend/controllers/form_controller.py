@@ -12,6 +12,7 @@ from schemas.form_schemas import (
     AdminSubmissionDetailResponse,
     AdminSubmissionListItem,
     OnlyOfficeBootstrapResponse,
+    PatchFieldTypesBody,
     SubmitBody,
     SubmitResponse,
     TemplateDetailResponse,
@@ -132,6 +133,18 @@ async def admin_get_template_detail(
     _: dict = Depends(require_roles([User.ROLE_ADMIN])),
 ) -> TemplateDetailResponse:
     return await form_flow_helper.admin_get_template_detail(template_id)
+
+
+@router.patch("/admin/templates/{template_id}/field-types", response_model=TemplateDetailResponse)
+async def admin_patch_template_field_types(
+    template_id: int,
+    body: PatchFieldTypesBody,
+    _: dict = Depends(require_roles([User.ROLE_ADMIN])),
+) -> TemplateDetailResponse:
+    return await form_flow_helper.admin_patch_template_field_types(
+        template_id,
+        updates=[{"key": f.key, "input_type": f.input_type} for f in body.fields],
+    )
 
 
 @router.put("/admin/templates/{template_id}", response_model=UploadResponse)

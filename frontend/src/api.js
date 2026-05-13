@@ -172,6 +172,14 @@ export async function updateAdminTemplate(templateId, { title = '', file = null 
   return data
 }
 
+/** Admin: set input_type (datatype) for each generated {{}} field. */
+export async function patchAdminTemplateFieldTypes(templateId, { fields }) {
+  return api(`/forms/admin/templates/${templateId}/field-types`, {
+    method: 'PATCH',
+    body: { fields },
+  })
+}
+
 export async function downloadSubmissionFile(submissionId, filename) {
   const token = getToken()
   const res = await fetch(`${base}/forms/submissions/${submissionId}/download`, {

@@ -29,6 +29,15 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class FieldTypeUpdateItem(BaseModel):
+    key: str = Field(..., min_length=1, max_length=256)
+    input_type: str = Field(..., min_length=1, max_length=32)
+
+
+class PatchFieldTypesBody(BaseModel):
+    fields: list[FieldTypeUpdateItem] = Field(default_factory=list)
+
+
 class OnlyOfficeBootstrapResponse(BaseModel):
     """Client loads sdkUrl script, then new DocsAPI.DocEditor(divId, { ...config, token })."""
 

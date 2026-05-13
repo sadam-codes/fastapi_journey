@@ -1,4 +1,6 @@
+import base64
 import os
+import re
 import mimetypes
 from io import BytesIO
 from typing import Any
@@ -6,7 +8,12 @@ from typing import Any
 from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from helpers.form_field_detect import detect_dynamic_fields
+from helpers.form_field_detect import (
+    ALLOWED_INPUT_TYPES,
+    detect_dynamic_fields,
+    merge_detected_with_saved_input_types,
+    normalize_field_schema,
+)
 from helpers.form_fill import fill_docx, fill_image_overlay, fill_pdf
 from helpers.form_text_extract import extract_plain_text_from_upload
 from models.form_flow import FormSubmission, FormTemplate
@@ -79,8 +86,9 @@ async def admin_upload_template(
             status_code=400,
             detail="No extractable text found. Add visible placeholders (e.g. {{client_name}}) or use OCR-friendly images.",
         )
-    schema = detect_dynamic_fields(text)
-    display_title = (title or "").strip() or filename
+    schema = normalize_field_schema(detect_dynamic_fields(text))
+    stem = (filename or "template").rsplit(".", 1)[0].strip() or "template"
+    display_title = (title or "").strip() or stem
     doc = await FormTemplate.create(
         title=display_title[:255],
         original_filename=filename[:255],
@@ -129,7 +137,7 @@ async def admin_update_template(
                 id=t.id,
                 title=t.title,
                 original_filename=t.original_filename,
-                fields_schema=list(t.fields_schema or []),
+                fields_schema=normalize_field_schema(list(t.fields_schema or [])),
                 char_count=len(t.extracted_text or ""),
                 message="No changes.",
             )
@@ -139,7 +147,7 @@ async def admin_update_template(
             id=t.id,
             title=t.title,
             original_filename=t.original_filename,
-            fields_schema=list(t.fields_schema or []),
+            fields_schema=normalize_field_schema(list(t.fields_schema or [])),
             char_count=len(t.extracted_text or ""),
             message="Title updated.",
         )
@@ -157,8 +165,8 @@ async def admin_update_template(
             status_code=400,
             detail="No extractable text found. Add visible placeholders (e.g. {{client_name}}) or use OCR-friendly images.",
         )
-    schema = detect_dynamic_fields(text)
-    t.file_blob = raw
+    detected = detect_dynamic_fields(text)
+    schema = normalize_field_schema(merge_detected_with_saved_input_types(list(t.fields_schema or []), detected))
     t.extracted_text = text[:500_000]
     t.fields_schema = schema
     t.original_filename = filename[:255]
@@ -203,9 +211,37 @@ async def admin_get_template_detail(template_id: int) -> TemplateDetailResponse:
         id=t.id,
         title=t.title,
         original_filename=t.original_filename,
-        fields_schema=list(t.fields_schema or []),
+        fields_schema=normalize_field_schema(list(t.fields_schema or [])),
         created_at=t.created_at,
     )
+
+
+async def admin_patch_template_field_types(
+    template_id: int,
+    *,
+    updates: list[dict[str, str]],
+) -> TemplateDetailResponse:
+    """Set input_type per detected field key (text, date, signature, …)."""
+    t = await FormTemplate.get_or_none(id=template_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Form template not found.")
+    current_list = normalize_field_schema(list(t.fields_schema or []))
+    by_key = {str(r["key"]): dict(r) for r in current_list if r.get("key")}
+    for item in updates:
+        key = str(item.get("key", "")).strip()
+        if not key or key not in by_key:
+            raise HTTPException(status_code=400, detail=f"Unknown or invalid field key: {key!r}")
+        it = str(item.get("input_type", "text")).strip().lower()
+        if it not in ALLOWED_INPUT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid input_type for {key!r}: {it!r}. Allowed: {', '.join(sorted(ALLOWED_INPUT_TYPES))}.",
+            )
+        by_key[key]["input_type"] = it
+    new_schema = [normalize_field_schema([by_key[str(r["key"])]])[0] for r in current_list if r.get("key")]
+    t.fields_schema = new_schema
+    await t.save()
+    return await admin_get_template_detail(template_id)
 
 
 async def admin_delete_template(template_id: int) -> dict[str, Any]:
@@ -261,7 +297,7 @@ async def get_template_detail(template_id: int, user: dict) -> TemplateDetailRes
         id=t.id,
         title=t.title,
         original_filename=t.original_filename,
-        fields_schema=list(t.fields_schema or []),
+        fields_schema=normalize_field_schema(list(t.fields_schema or [])),
         created_at=t.created_at,
     )
 
@@ -296,6 +332,89 @@ async def template_preview_response(template_id: int, user: dict) -> StreamingRe
     )
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _answer_value_for_type(row: dict[str, Any], raw: Any) -> str:
+    """Normalize client answer to a string stored in DB and used for merge."""
+    it = str(row.get("input_type") or "text").strip().lower()
+    if it not in ALLOWED_INPUT_TYPES:
+        it = "text"
+    s = "" if raw is None else str(raw).strip()
+
+    if it == "checkbox":
+        low = s.lower()
+        return "true" if low in ("true", "1", "yes", "on") else ""
+
+    if it == "number":
+        if not s:
+            return ""
+        try:
+            n = float(s.replace(",", ""))
+            if n.is_integer():
+                return str(int(n))
+            return str(n)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid number for field {row.get('key')!r}: {s!r}.",
+            )
+
+    if it == "date":
+        if not s:
+            return ""
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date for field {row.get('key')!r}; use YYYY-MM-DD.",
+            )
+        return s
+
+    if it == "email":
+        if not s:
+            return ""
+        if not _EMAIL_RE.match(s):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid email for field {row.get('key')!r}.",
+            )
+        return s
+
+    if it == "signature":
+        if not s:
+            return ""
+        if not s.startswith("data:image/") or ";base64," not in s:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid signature for field {row.get('key')!r}; expected a data URL image.",
+            )
+        try:
+            b64 = s.split(",", 1)[1]
+            base64.b64decode(b64, validate=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid signature image for field {row.get('key')!r}.",
+            ) from exc
+        if len(b64) < 80:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Signature for field {row.get('key')!r} is too small or empty.",
+            )
+        return s
+
+    return s
+
+
+def _answer_is_empty(row: dict[str, Any], stored: str) -> bool:
+    it = str(row.get("input_type") or "text").strip().lower()
+    if it not in ALLOWED_INPUT_TYPES:
+        it = "text"
+    if it == "checkbox":
+        return stored not in ("true", "1", "yes", "on")
+    return not (stored or "").strip()
+
+
 async def submit_template_answers(
     template_id: int,
     user: dict,
@@ -305,11 +424,15 @@ async def submit_template_answers(
     template = await FormTemplate.get_or_none(id=template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Form template not found.")
-    schema: list[dict[str, Any]] = list(template.fields_schema or [])
+    schema = normalize_field_schema(list(template.fields_schema or []))
     if not schema:
         raise HTTPException(status_code=400, detail="This template has no detected fields to fill.")
-    answers = {k: str(v) for k, v in body.answers.items()}
-    missing = [row["key"] for row in schema if not answers.get(row["key"], "").strip()]
+    answers: dict[str, str] = {}
+    for row in schema:
+        key = str(row["key"])
+        raw = body.answers.get(key)
+        answers[key] = _answer_value_for_type(row, raw)
+    missing = [row["key"] for row in schema if _answer_is_empty(row, answers.get(str(row["key"]), ""))]
     if missing:
         raise HTTPException(
             status_code=400,

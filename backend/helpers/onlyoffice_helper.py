@@ -18,7 +18,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from helpers.auth_helper import JWT_ALGORITHM, JWT_SECRET
-from helpers.form_field_detect import detect_dynamic_fields
+from helpers.form_field_detect import detect_dynamic_fields, merge_detected_with_saved_input_types, normalize_field_schema
 from helpers.form_text_extract import extract_plain_text_from_upload
 from models.form_flow import FormSubmission, FormTemplate
 from models.user import User
@@ -702,7 +702,10 @@ async def onlyoffice_process_callback(
             prev = (t.extracted_text or "").strip()
             text = (prev[:500_000] if prev else " ")
 
-        schema = detect_dynamic_fields(text)
+        detected = detect_dynamic_fields(text)
+        schema = normalize_field_schema(
+            merge_detected_with_saved_input_types(list(t.fields_schema or []), detected)
+        )
         t.file_blob = new_raw
         t.extracted_text = text[:500_000]
         t.fields_schema = schema

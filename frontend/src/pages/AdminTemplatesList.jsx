@@ -1,10 +1,12 @@
 import { useEffect, startTransition, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { toastError, toastSuccess } from '../toast.js'
 import { btnSecondaryClass } from '../components/UserAreaLayout.jsx'
 
 export default function AdminTemplatesList() {
+  const confirm = useConfirm()
   const [templates, setTemplates] = useState([])
   const [ooStatus, setOoStatus] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
@@ -19,13 +21,14 @@ export default function AdminTemplatesList() {
   }
 
   async function deleteTemplate(t) {
-    if (
-      !window.confirm(
-        `Delete “${t.title}”? All user submissions for this template will be removed. This cannot be undone.`,
-      )
-    ) {
-      return
-    }
+    const ok = await confirm({
+      title: 'Delete template?',
+      message: `Delete “${t.title}”? All user submissions for this template will be removed. This cannot be undone.`,
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    })
+    if (!ok) return
     setDeletingId(t.id)
     try {
       await api(`/forms/admin/templates/${t.id}`, { method: 'DELETE' })

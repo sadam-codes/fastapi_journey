@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import DocumentPreview from '../components/DocumentPreview.jsx'
@@ -10,6 +10,209 @@ import {
   UserAreaLayout,
   userAreaInputClass,
 } from '../components/UserAreaLayout.jsx'
+
+const W = 400
+const H = 160
+
+function SignaturePad({ value, onChange, disabled }) {
+  const canvasRef = useRef(null)
+  const drawing = useRef(false)
+  const stroked = useRef(false)
+  const inited = useRef(false)
+
+  const setupCanvas = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = W * dpr
+    canvas.height = H * dpr
+    canvas.style.width = `${W}px`
+    canvas.style.height = `${H}px`
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, W, H)
+    ctx.strokeStyle = '#0f172a'
+    ctx.lineWidth = 2
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+  }, [])
+
+  useEffect(() => {
+    if (inited.current) return
+    setupCanvas()
+    inited.current = true
+  }, [setupCanvas])
+
+  const pos = useCallback((e) => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: 0, y: 0 }
+    const rect = canvas.getBoundingClientRect()
+    const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX) ?? 0
+    const clientY = e.clientY ?? (e.touches && e.touches[0]?.clientY) ?? 0
+    return { x: clientX - rect.left, y: clientY - rect.top }
+  }, [])
+
+  const exportPng = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    try {
+      onChange(canvas.toDataURL('image/png'))
+    } catch {
+      toastError('Could not read signature from canvas.')
+    }
+  }, [onChange])
+
+  const clear = useCallback(() => {
+    stroked.current = false
+    setupCanvas()
+    onChange('')
+  }, [onChange, setupCanvas])
+
+  useEffect(() => {
+    if (!value && inited.current) {
+      setupCanvas()
+    }
+  }, [value, setupCanvas])
+
+  function onPointerDown(e) {
+    if (disabled) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    e.preventDefault()
+    drawing.current = true
+    stroked.current = false
+    try {
+      canvas.setPointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const { x, y } = pos(e)
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+  }
+
+  function onPointerMove(e) {
+    if (!drawing.current || disabled) return
+    e.preventDefault()
+    stroked.current = true
+    const canvas = canvasRef.current
+    const ctx = canvas?.getContext('2d')
+    if (!ctx) return
+    const { x, y } = pos(e)
+    ctx.lineTo(x, y)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+  }
+
+  function onPointerUp(e) {
+    if (!drawing.current) return
+    drawing.current = false
+    try {
+      canvasRef.current?.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+    if (stroked.current) {
+      exportPng()
+    }
+  }
+
+  return (
+    <div className="mt-1.5 space-y-2">
+      <canvas
+        ref={canvasRef}
+        className="touch-none rounded-lg border border-slate-300 bg-white shadow-inner"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerUp}
+      />
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={btnSecondaryClass} disabled={disabled} onClick={clear}>
+          Clear
+        </button>
+        {value ? (
+          <span className="self-center text-xs font-medium text-emerald-700">Signature captured</span>
+        ) : (
+          <span className="self-center text-xs text-slate-500">Draw above, then release to save</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function inputTypeOf(f) {
+  const t = (f.input_type || 'text').toLowerCase()
+  return t
+}
+
+function renderFieldControl(f, answers, setField, disabled) {
+  const it = inputTypeOf(f)
+  const v = answers[f.key] ?? ''
+
+  if (it === 'textarea') {
+    return (
+      <textarea
+        value={v}
+        onChange={(e) => setField(f.key, e.target.value)}
+        placeholder={f.placeholders?.[0] || f.key}
+        required
+        rows={4}
+        disabled={disabled}
+        className={userAreaInputClass}
+      />
+    )
+  }
+
+  if (it === 'checkbox') {
+    return (
+      <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-sm font-normal text-slate-700">
+        <input
+          type="checkbox"
+          checked={v === 'true'}
+          onChange={(e) => setField(f.key, e.target.checked ? 'true' : '')}
+          required
+          disabled={disabled}
+          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+        />
+        <span>Yes</span>
+      </label>
+    )
+  }
+
+  if (it === 'signature') {
+    return <SignaturePad value={v} onChange={(dataUrl) => setField(f.key, dataUrl)} disabled={disabled} />
+  }
+
+  const common = {
+    value: v,
+    onChange: (e) => setField(f.key, e.target.value),
+    placeholder: f.placeholders?.[0] || f.key,
+    required: true,
+    disabled,
+    className: userAreaInputClass,
+  }
+
+  if (it === 'number') {
+    return <input type="number" step="any" {...common} />
+  }
+  if (it === 'email') {
+    return <input type="email" autoComplete="email" {...common} />
+  }
+  if (it === 'tel') {
+    return <input type="tel" autoComplete="tel" {...common} />
+  }
+  if (it === 'date') {
+    return <input type="date" {...common} />
+  }
+
+  return <input type="text" {...common} />
+}
 
 export default function UserFormFill() {
   const { id } = useParams()
@@ -120,16 +323,13 @@ export default function UserFormFill() {
 
         <form className="mt-6 flex flex-col gap-5" onSubmit={onSubmit}>
           {fields.map((f) => (
-            <label key={f.key} className="text-sm font-medium text-slate-800">
-              {f.label}
-              <input
-                value={answers[f.key] ?? ''}
-                onChange={(e) => setField(f.key, e.target.value)}
-                placeholder={f.placeholders?.[0] || f.key}
-                required
-                className={userAreaInputClass}
-              />
-            </label>
+            <div key={f.key} className="text-sm font-medium text-slate-800">
+              <span>{f.label}</span>
+              {inputTypeOf(f) === 'signature' ? (
+                <p className="mt-0.5 text-xs font-normal text-slate-500">Sign with mouse or touch</p>
+              ) : null}
+              <div className="mt-1.5 font-normal">{renderFieldControl(f, answers, setField, busy)}</div>
+            </div>
           ))}
           <div className="flex flex-wrap gap-3 pt-1">
             <button type="submit" disabled={busy} className={btnPrimaryClass}>

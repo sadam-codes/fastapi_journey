@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, NavLink, Outlet, useNavigate, useOutletContext, useParams } from 'react-router-dom'
-import { api, downloadAdminTemplate, updateAdminTemplate } from '../api'
+import { api, downloadAdminTemplate, patchAdminTemplateFieldTypes, updateAdminTemplate } from '../api'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { toastError, toastInfo, toastSuccess, toastWarning } from '../toast.js'
 import DocumentPreview from '../components/DocumentPreview.jsx'
 import OnlyOfficeDocx from '../components/OnlyOfficeDocx.jsx'
@@ -65,6 +66,119 @@ function IconTrash({ className }) {
 
 function isDocxFilename(name) {
   return typeof name === 'string' && name.toLowerCase().endsWith('.docx')
+}
+
+const FIELD_TYPE_OPTIONS = [
+  { value: 'text', label: 'Text (single line)' },
+  { value: 'textarea', label: 'Text (multiple lines)' },
+  { value: 'number', label: 'Number' },
+  { value: 'email', label: 'Email' },
+  { value: 'tel', label: 'Phone' },
+  { value: 'date', label: 'Date' },
+  { value: 'checkbox', label: 'Checkbox' },
+  { value: 'signature', label: 'Signature' },
+]
+
+export function AdminTemplateFieldsTab() {
+  const { template, detail, reload } = useOutletContext()
+  const [rows, setRows] = useState([])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const fs = detail?.fields_schema
+    if (!Array.isArray(fs)) {
+      setRows([])
+      return
+    }
+    setRows(fs.map((f) => ({ ...f, input_type: f.input_type || 'text' })))
+  }, [detail])
+
+  async function onSave() {
+    if (!template) return
+    setBusy(true)
+    try {
+      const fields = rows.map((r) => ({
+        key: r.key,
+        input_type: (r.input_type || 'text').toLowerCase(),
+      }))
+      await patchAdminTemplateFieldTypes(template.id, { fields })
+      toastSuccess('Field types saved.')
+      await reload()
+    } catch (ex) {
+      toastError(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!detail) {
+    return <p className="p-4 text-sm text-slate-500">Loading…</p>
+  }
+
+  if (!rows.length) {
+    return (
+      <div className="mx-auto max-w-xl space-y-4 px-4 py-8">
+        <p className="text-sm font-semibold text-slate-800">Generated fields</p>
+        <p className="text-sm text-slate-600">
+          No <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">{'{{field_name}}'}</code> placeholders were
+          detected in the saved template yet. Save your document in the <span className="font-medium">Edit</span> tab
+          (or re-upload), then open this tab again.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5 px-4 py-6">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated fields</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Pick an input type for each placeholder. Use <span className="font-mono text-xs">{'{{name}}'}</span> in the
+          document.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {rows.map((r, i) => (
+          <div
+            key={r.key}
+            className="flex flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+          >
+            <p className="text-sm font-semibold text-slate-900">{r.label || r.key}</p>
+            <p className="mt-0.5 font-mono text-xs text-slate-500">{r.key}</p>
+            {r.placeholders?.length ? (
+              <p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={r.placeholders.join(' · ')}>
+                {r.placeholders.join(' · ')}
+              </p>
+            ) : null}
+            <label className="mt-3 block text-xs font-medium text-slate-600">
+              Type
+              <select
+                value={r.input_type || 'text'}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setRows((prev) => prev.map((x, j) => (j === i ? { ...x, input_type: v } : x)))
+                }}
+                className={`${userAreaInputClass} mt-1 !text-sm`}
+              >
+                {FIELD_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <button type="button" disabled={busy} className={btnPrimaryClass} onClick={() => void onSave()}>
+          {busy ? 'Saving…' : 'Save field types'}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function subTabClass({ isActive }) {
@@ -186,6 +300,7 @@ export function AdminTemplateEditTab() {
 export default function AdminTemplateDetail() {
   const { templateId } = useParams()
   const navigate = useNavigate()
+  const confirm = useConfirm()
   const [template, setTemplate] = useState(null)
   const [detail, setDetail] = useState(null)
   const [notFound, setNotFound] = useState(false)
@@ -281,13 +396,15 @@ export default function AdminTemplateDetail() {
 
   async function onDelete() {
     if (!template) return
-    if (
-      !window.confirm(
+    const ok = await confirm({
+      title: 'Delete template?',
+      message:
         'Delete this template? All user submissions for it will be removed. This cannot be undone.',
-      )
-    ) {
-      return
-    }
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    })
+    if (!ok) return
     setDeletingId(true)
     try {
       await api(`/forms/admin/templates/${template.id}`, { method: 'DELETE' })
@@ -374,6 +491,7 @@ export default function AdminTemplateDetail() {
       onSaveMetadata,
       onSaveDocx,
       saveDocxBusy,
+      reload,
     }),
     [
       template,
@@ -387,6 +505,7 @@ export default function AdminTemplateDetail() {
       onSaveMetadata,
       onSaveDocx,
       saveDocxBusy,
+      reload,
     ],
   )
 
@@ -494,15 +613,18 @@ export default function AdminTemplateDetail() {
           <NavLink to={`/admin/templates/${templateId}/edit`} className={subTabClass}>
             Edit
           </NavLink>
+          <NavLink to={`/admin/templates/${templateId}/fields`} className={subTabClass}>
+            Generated fields
+          </NavLink>
         </div>
-      </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {template && detail ? (
-          <Outlet context={outletContext} />
-        ) : (
-          <p className="p-4 text-sm text-slate-500">Loading…</p>
-        )}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {template && detail ? (
+            <Outlet context={outletContext} />
+          ) : (
+            <p className="p-4 text-sm text-slate-500">Loading…</p>
+          )}
+        </div>
       </div>
     </div>
   )
