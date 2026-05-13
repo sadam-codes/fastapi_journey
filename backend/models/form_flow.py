@@ -12,6 +12,11 @@ class FormTemplate(Model):
     extracted_text = fields.TextField(null=True)
     fields_schema = fields.JSONField(default=list)
     created_at = fields.DatetimeField(auto_now_add=True)
+    # OnlyOffice: stable edit session key is tmpl-{id}-e{oo_key_nonce}; bump nonce when the file is replaced via admin
+    # upload (not when OO callback saves edits), so the editor loads a fresh document.
+    oo_key_nonce = fields.IntField(default=0)
+    # Bumped after each successful OO callback save; used to wait for persistence after forcesave.
+    file_version = fields.IntField(default=0)
 
     class Meta:
         table = "form_templates"

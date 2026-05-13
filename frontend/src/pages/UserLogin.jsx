@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, setToken } from '../api'
 import PasswordField from '../components/PasswordField.jsx'
+import { toastError } from '../toast.js'
 import {
   btnPrimaryClass,
   GlassCard,
@@ -13,11 +14,9 @@ export default function UserLogin() {
   const nav = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [err, setErr] = useState('')
 
   async function onSubmit(e) {
     e.preventDefault()
-    setErr('')
     try {
       const data = await api('/auth/login', {
         method: 'POST',
@@ -25,11 +24,14 @@ export default function UserLogin() {
       })
       setToken(data.token)
       const role = data.user?.role
-      if (role === 'admin') nav('/admin/upload')
+      if (role === 'admin') nav('/admin/templates')
       else if (role === 'user') nav('/user/forms')
-      else setErr('This account has an unsupported role. Ask your administrator to fix it in the database.')
+      else
+        toastError(
+          'This account has an unsupported role. Ask your administrator to fix it in the database.',
+        )
     } catch (ex) {
-      setErr(ex.message)
+      toastError(ex.message)
     }
   }
 
@@ -68,9 +70,6 @@ export default function UserLogin() {
               placeholder="Your password"
             />
           </label>
-          {err && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
-          )}
           <button type="submit" className={`mt-1 ${btnPrimaryClass}`}>
             Sign in
           </button>
@@ -81,7 +80,7 @@ export default function UserLogin() {
             Create account
           </Link>
           <span className="text-slate-400"> · </span>
-          <Link to="/" className="font-semibold text-indigo-600 hover:text-indigo-500">
+          <Link to="/home" className="font-semibold text-indigo-600 hover:text-indigo-500">
             Home
           </Link>
         </p>

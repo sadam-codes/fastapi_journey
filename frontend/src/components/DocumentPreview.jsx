@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchTemplatePreview } from '../api'
+import { fetchSubmissionFilledPreview, fetchTemplatePreview } from '../api'
 import OnlyOfficeDocx from './OnlyOfficeDocx.jsx'
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tif', '.tiff'])
@@ -14,7 +14,13 @@ function isDocx(name) {
   return fileExt(name) === '.docx'
 }
 
-function LegacyBlobPreview({ templateId, filename, revision }) {
+function LegacyBlobPreview({
+  templateId,
+  submissionId,
+  filename,
+  revision,
+  fillHeight = false,
+}) {
   const [phase, setPhase] = useState('loading')
   const [hint, setHint] = useState('')
   const [blobUrl, setBlobUrl] = useState(null)
@@ -28,7 +34,10 @@ function LegacyBlobPreview({ templateId, filename, revision }) {
       setHint('')
       setBlobUrl(null)
       try {
-        const { blob, contentType } = await fetchTemplatePreview(templateId, revision)
+        const { blob, contentType } =
+          submissionId != null
+            ? await fetchSubmissionFilledPreview(submissionId, revision)
+            : await fetchTemplatePreview(templateId, revision)
         if (!alive) return
         const ex = fileExt(filename)
         const ct = (contentType || blob.type || '').toLowerCase()
@@ -59,7 +68,7 @@ function LegacyBlobPreview({ templateId, filename, revision }) {
       alive = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [templateId, filename, revision])
+  }, [templateId, submissionId, filename, revision])
 
   if (phase === 'loading') {
     return (
@@ -83,16 +92,34 @@ function LegacyBlobPreview({ templateId, filename, revision }) {
 
   if (phase === 'pdf' && blobUrl) {
     return (
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-200/40 shadow-inner">
-        <iframe title="PDF preview" src={blobUrl} className="h-[min(70vh,720px)] w-full bg-white" />
+      <div
+        className={
+          fillHeight
+            ? 'flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-slate-200/40'
+            : 'overflow-hidden rounded-xl border border-slate-200 bg-slate-200/40 shadow-inner'
+        }
+      >
+        <iframe
+          title="PDF preview"
+          src={blobUrl}
+          className={
+            fillHeight ? 'min-h-0 w-full flex-1 border-0 bg-white' : 'h-[min(70vh,720px)] w-full bg-white'
+          }
+        />
       </div>
     )
   }
 
   if (phase === 'image' && blobUrl) {
     return (
-      <div className="flex max-h-[min(70vh,720px)] justify-center overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-inner">
-        <img src={blobUrl} alt="Template preview" className="max-w-full object-contain" />
+      <div
+        className={
+          fillHeight
+            ? 'flex h-full min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-4'
+            : 'flex max-h-[min(70vh,720px)] justify-center overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-inner'
+        }
+      >
+        <img src={blobUrl} alt="Document preview" className="max-h-full max-w-full object-contain" />
       </div>
     )
   }
@@ -101,31 +128,47 @@ function LegacyBlobPreview({ templateId, filename, revision }) {
 }
 
 /**
- * Template preview: .docx via ONLYOFFICE; PDF iframe; images inline.
+ * Preview original template or merged submission: .docx via ONLYOFFICE; PDF iframe; images inline.
+ * Pass either `templateId` OR `submissionId` (admin filled file).
  */
 export default function DocumentPreview({
   templateId,
+  submissionId,
   filename,
   revision = 0,
   onlyOfficeAdmin = true,
+  fillHeight = false,
 }) {
+  const useSubmission = submissionId != null
+
   if (isDocx(filename)) {
-    return (
+    const editor = (
       <OnlyOfficeDocx
-        templateId={templateId}
+        templateId={useSubmission ? undefined : templateId}
+        submissionId={useSubmission ? submissionId : undefined}
         mode="view"
         admin={onlyOfficeAdmin}
         revision={revision}
-        className="h-[min(72vh,780px)] min-h-[360px]"
+        className={
+          fillHeight
+            ? 'min-h-0 flex-1 rounded-none border-0 bg-slate-100 shadow-none'
+            : 'h-[min(72vh,780px)] min-h-[360px]'
+        }
       />
     )
+    if (fillHeight) {
+      return <div className="flex min-h-[calc(100svh-10.5rem)] w-full flex-1 flex-col">{editor}</div>
+    }
+    return editor
   }
 
   return (
     <LegacyBlobPreview
-      templateId={templateId}
+      templateId={useSubmission ? undefined : templateId}
+      submissionId={useSubmission ? submissionId : undefined}
       filename={filename}
       revision={revision}
+      fillHeight={fillHeight}
     />
   )
 }

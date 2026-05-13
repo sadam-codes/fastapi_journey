@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, downloadSubmissionFile, getToken, setToken } from '../api'
+import { toastError, toastSuccess } from '../toast.js'
 import {
   btnMutedClass,
   btnPrimaryClass,
@@ -14,8 +15,7 @@ export default function UserSubmissions() {
   const [params] = useSearchParams()
   const highlight = params.get('highlight')
   const [rows, setRows] = useState([])
-  const [err, setErr] = useState('')
-  const [downloadErr, setDownloadErr] = useState('')
+  const [loadFailed, setLoadFailed] = useState(false)
 
   function logout() {
     setToken(null)
@@ -29,9 +29,11 @@ export default function UserSubmissions() {
     }
     ;(async () => {
       try {
+        setLoadFailed(false)
         setRows(await api('/forms/submissions'))
       } catch (e) {
-        setErr(e.message)
+        setLoadFailed(true)
+        toastError(e.message)
       }
     })()
   }, [nav])
@@ -60,15 +62,7 @@ export default function UserSubmissions() {
         </div>
 
         <div className="p-6 sm:px-8 sm:pb-8 sm:pt-2">
-          {err && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
-          )}
-          {downloadErr && (
-            <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              {downloadErr}
-            </p>
-          )}
-          {rows.length === 0 && !err ? (
+          {rows.length === 0 && !loadFailed ? (
             <p className="mt-4 text-sm leading-relaxed text-slate-600">
               No submissions yet. Open a form from{' '}
               <Link to="/user/forms" className="font-semibold text-indigo-600 hover:text-indigo-500">
@@ -101,11 +95,11 @@ export default function UserSubmissions() {
                       <button
                         type="button"
                         onClick={async () => {
-                          setDownloadErr('')
                           try {
                             await downloadSubmissionFile(r.id, r.filled_filename)
+                            toastSuccess('Download started.')
                           } catch (e) {
-                            setDownloadErr(e.message || 'Download failed.')
+                            toastError(e.message || 'Download failed.')
                           }
                         }}
                         className={`shrink-0 ${btnPrimaryClass} py-2.5 shadow-md`}
@@ -122,7 +116,7 @@ export default function UserSubmissions() {
       </GlassCard>
 
       <p className="mt-8 text-center text-sm text-slate-500 sm:text-left">
-        <Link to="/" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
+        <Link to="/home" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
           ← Back to home
         </Link>
       </p>

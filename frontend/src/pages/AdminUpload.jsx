@@ -1,26 +1,25 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useRef, useState } from 'react'
 import { getToken } from '../api'
-import {
-  btnPrimaryClass,
-  btnSecondaryClass,
-  fileInputClass,
-  userAreaInputClass,
-} from '../components/UserAreaLayout.jsx'
+import { toastError, toastSuccess, toastWarning } from '../toast.js'
+import { btnPrimaryClass, GlassCard } from '../components/UserAreaLayout.jsx'
+
+const ACCEPT = '.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.tiff,.bmp'
 
 export default function AdminUpload() {
-  const [title, setTitle] = useState('')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [err, setErr] = useState('')
+  const [dragOver, setDragOver] = useState(false)
+  const inputRef = useRef(null)
+
+  const pickFiles = useCallback((list) => {
+    const f = list?.[0]
+    if (f) setFile(f)
+  }, [])
 
   async function onUpload(e) {
     e.preventDefault()
-    setErr('')
-    setMsg('')
     if (!file) {
-      setErr('Choose a file first.')
+      toastWarning('Choose a file first, or drop it into the upload area.')
       return
     }
     setBusy(true)
@@ -28,8 +27,7 @@ export default function AdminUpload() {
       const fd = new FormData()
       fd.append('file', file)
       const base = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
-      const qs = title.trim() ? `?title=${encodeURIComponent(title.trim())}` : ''
-      const res = await fetch(`${base}/forms/admin/upload${qs}`, {
+      const res = await fetch(`${base}/forms/admin/upload`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${getToken()}` },
         body: fd,
@@ -42,61 +40,70 @@ export default function AdminUpload() {
           : detail || res.statusText
         throw new Error(msgText)
       }
-      setMsg(
-        `${data.message} — ${data.fields_schema?.length || 0} field(s) from {{…}} markers. Template #${data.id}`,
-      )
+      toastSuccess('Uploaded successfully.')
       setFile(null)
-      setTitle('')
     } catch (ex) {
-      setErr(ex.message)
+      toastError(ex.message)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div>
-      <h2 className="text-lg font-semibold text-slate-900">Upload template</h2>
-      <p className="mt-2 text-sm text-slate-600">
-        Only text wrapped in <code className="rounded bg-slate-100 px-1 font-mono text-xs">{'{{field_name}}'}</code>{' '}
-        becomes a user form field. Download the file from the Templates tab to edit in Word, then upload again.
-      </p>
-      <form className="mt-6 flex max-w-xl flex-col gap-5" onSubmit={onUpload}>
-        <label className="text-sm font-medium text-slate-800">
-          Display title (optional)
+    <div className="flex min-h-[50vh] items-center justify-center py-8">
+      <GlassCard className="w-full max-w-lg overflow-hidden !p-0 sm:!p-0">
+        <form onSubmit={onUpload}>
           <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Client intake 2026"
-            className={userAreaInputClass}
-          />
-        </label>
-        <label className="text-sm font-medium text-slate-800">
-          PDF, DOCX, or image
-          <input
+            ref={inputRef}
             type="file"
-            accept=".pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.tiff,.bmp"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className={fileInputClass}
+            accept={ACCEPT}
+            className="sr-only"
+            onChange={(e) => pickFiles(e.target.files)}
           />
-        </label>
-        {err && (
-          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
-        )}
-        {msg && (
-          <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
-            {msg}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-3">
-          <button type="submit" disabled={busy} className={btnPrimaryClass}>
-            {busy ? 'Uploading…' : 'Upload template'}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            onDragEnter={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault()
+              if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false)
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOver(false)
+              pickFiles(e.dataTransfer.files)
+            }}
+            className={`flex w-full flex-col items-center justify-center px-6 py-16 text-center transition sm:py-20 ${
+              dragOver
+                ? 'bg-indigo-50/90 ring-2 ring-inset ring-indigo-300/80'
+                : 'bg-slate-50/50 hover:bg-indigo-50/40'
+            }`}
+          >
+            <span className="text-base font-semibold text-slate-900">Drop file here</span>
+            <span className="mt-2 text-sm text-slate-500">or click to choose a file</span>
+            {file ? (
+              <span
+                className="mt-6 inline-flex max-w-full items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm ring-1 ring-slate-200/80"
+                title={file.name}
+              >
+                <span className="truncate">{file.name}</span>
+                <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                  {(file.size / 1024).toFixed(0)} KB
+                </span>
+              </span>
+            ) : null}
           </button>
-          <Link to="/admin/templates" className={btnSecondaryClass}>
-            Go to Templates
-          </Link>
-        </div>
-      </form>
+          <div className="border-t border-slate-200/80 p-4 sm:p-5">
+            <button type="submit" disabled={busy} className={`${btnPrimaryClass} w-full justify-center`}>
+              {busy ? 'Uploading…' : 'Upload'}
+            </button>
+          </div>
+        </form>
+      </GlassCard>
     </div>
   )
 }

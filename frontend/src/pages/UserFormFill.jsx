@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, getToken } from '../api'
 import DocumentPreview from '../components/DocumentPreview.jsx'
+import { toastError, toastSuccess } from '../toast.js'
 import {
   btnPrimaryClass,
   btnSecondaryClass,
@@ -15,7 +16,7 @@ export default function UserFormFill() {
   const nav = useNavigate()
   const [detail, setDetail] = useState(null)
   const [answers, setAnswers] = useState({})
-  const [err, setErr] = useState('')
+  const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewRev, setPreviewRev] = useState(0)
@@ -27,6 +28,7 @@ export default function UserFormFill() {
     }
     ;(async () => {
       try {
+        setLoadFailed(false)
         const d = await api(`/forms/templates/${id}`)
         setDetail(d)
         const init = {}
@@ -35,7 +37,8 @@ export default function UserFormFill() {
         }
         setAnswers(init)
       } catch (e) {
-        setErr(e.message)
+        setLoadFailed(true)
+        toastError(e.message)
       }
     })()
   }, [id, nav])
@@ -46,22 +49,22 @@ export default function UserFormFill() {
 
   async function onSubmit(e) {
     e.preventDefault()
-    setErr('')
     setBusy(true)
     try {
       const res = await api(`/forms/templates/${id}/submit`, {
         method: 'POST',
         body: { answers },
       })
+      toastSuccess('Submitted. Your merged file is ready in My submissions.')
       nav(`/user/submissions?highlight=${res.submission_id}`)
     } catch (ex) {
-      setErr(ex.message)
+      toastError(ex.message)
     } finally {
       setBusy(false)
     }
   }
 
-  if (!detail && !err) {
+  if (!detail && !loadFailed) {
     return (
       <UserAreaLayout wide centerContent>
         <GlassCard>
@@ -71,11 +74,11 @@ export default function UserFormFill() {
     )
   }
 
-  if (err && !detail) {
+  if (loadFailed && !detail) {
     return (
       <UserAreaLayout wide centerContent={false}>
         <GlassCard>
-          <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
+          <p className="text-sm text-slate-700">This form could not be loaded.</p>
           <Link
             to="/user/forms"
             className="mt-5 inline-flex font-semibold text-indigo-600 hover:text-indigo-500"
@@ -128,9 +131,6 @@ export default function UserFormFill() {
               />
             </label>
           ))}
-          {err && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
-          )}
           <div className="flex flex-wrap gap-3 pt-1">
             <button type="submit" disabled={busy} className={btnPrimaryClass}>
               {busy ? 'Submitting…' : 'Submit'}

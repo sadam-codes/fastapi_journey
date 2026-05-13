@@ -34,11 +34,20 @@ function loadSdkOnce(sdkUrl) {
   return sdkPromises.get(sdkUrl)
 }
 
-async function fetchBootstrap(templateId, mode, admin) {
-  const path = admin
-    ? `/forms/admin/templates/${templateId}/onlyoffice/bootstrap`
-    : `/forms/templates/${templateId}/onlyoffice/bootstrap`
-  const res = await fetch(`${apiBase}${path}?mode=${encodeURIComponent(mode)}`, {
+async function fetchBootstrap(templateId, submissionId, mode, admin, viewCacheBust = 0) {
+  let url
+  if (submissionId != null) {
+    url = `${apiBase}/forms/admin/submissions/${submissionId}/onlyoffice/bootstrap?mode=${encodeURIComponent(mode)}&v=${encodeURIComponent(String(viewCacheBust))}`
+  } else {
+    const path = admin
+      ? `/forms/admin/templates/${templateId}/onlyoffice/bootstrap`
+      : `/forms/templates/${templateId}/onlyoffice/bootstrap`
+    url = `${apiBase}${path}?mode=${encodeURIComponent(mode)}`
+    if (mode === 'view') {
+      url += `&v=${encodeURIComponent(String(viewCacheBust))}`
+    }
+  }
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${getToken()}` },
     cache: 'no-store',
   })
@@ -54,10 +63,11 @@ async function fetchBootstrap(templateId, mode, admin) {
 }
 
 /**
- * ONLYOFFICE Docs editor or viewer for .docx templates.
+ * ONLYOFFICE Docs editor or viewer for .docx templates or admin merged submissions.
  */
 export default function OnlyOfficeDocx({
   templateId,
+  submissionId,
   mode,
   admin,
   revision = 0,
@@ -66,10 +76,13 @@ export default function OnlyOfficeDocx({
   onError,
 }) {
   const rid = useId().replace(/:/g, '')
-  const containerId = useMemo(
-    () => `oo_${templateId}_${mode}_${revision}_${rid}`.replace(/[^a-zA-Z0-9_-]/g, '_'),
-    [templateId, mode, revision, rid],
-  )
+  const containerId = useMemo(() => {
+    const base =
+      submissionId != null
+        ? `oo_sub_${submissionId}_${mode}_${revision}_${rid}`
+        : `oo_${templateId}_${mode}_${revision}_${rid}`
+    return base.replace(/[^a-zA-Z0-9_-]/g, '_')
+  }, [templateId, submissionId, mode, revision, rid])
   const hostRef = useRef(null)
   const editorRef = useRef(null)
   const onReadyRef = useRef(onReady)
@@ -101,6 +114,8 @@ export default function OnlyOfficeDocx({
 
   useEffect(() => {
     let cancelled = false
+    let stallTimer = 0
+    let documentReady = false
 
     async function run() {
       setPhase('loading')
@@ -108,7 +123,16 @@ export default function OnlyOfficeDocx({
       tearDown()
 
       try {
-        const boot = await fetchBootstrap(templateId, mode, admin)
+        if (
+          submissionId == null &&
+          (templateId == null || Number.isNaN(Number(templateId)))
+        ) {
+          throw new Error('Missing template for OnlyOffice.')
+        }
+        if (submissionId != null && Number.isNaN(Number(submissionId))) {
+          throw new Error('Invalid submission for OnlyOffice.')
+        }
+        const boot = await fetchBootstrap(templateId, submissionId, mode, admin, mode === 'view' ? revision : 0)
         if (cancelled) return
 
         if (!boot.available) {
@@ -135,23 +159,43 @@ export default function OnlyOfficeDocx({
 
         const cfg = JSON.parse(JSON.stringify(boot.config))
         cfg.events = {
+          ...(cfg.events && typeof cfg.events === 'object' ? cfg.events : {}),
           onDocumentReady: () => {
+            if (cancelled) return
+            documentReady = true
+            window.clearTimeout(stallTimer)
+            stallTimer = 0
+            setPhase('ready')
             onReadyRef.current?.()
           },
           onError: (event) => {
+            if (cancelled) return
+            window.clearTimeout(stallTimer)
+            stallTimer = 0
             const msg = event?.data || event?.message || 'OnlyOffice error'
-            onErrorRef.current?.(String(msg))
+            const s = String(msg)
+            setPhase('error')
+            setHint(s)
+            onErrorRef.current?.(s)
           },
         }
         if (boot.token) {
           cfg.token = boot.token
         }
 
+        stallTimer = window.setTimeout(() => {
+          if (cancelled || documentReady) return
+          setHint(
+            'The document did not finish loading in time. Check the browser console, Document Server logs, and that JWT / PUBLIC_APP_URL match your setup.',
+          )
+          setPhase('error')
+        }, 120_000)
+
         const editor = new window.DocsAPI.DocEditor(containerId, cfg)
         editorRef.current = editor
-        setPhase('ready')
       } catch (e) {
         if (cancelled) return
+        window.clearTimeout(stallTimer)
         const msg = e?.message || String(e)
         setPhase('error')
         setHint(msg)
@@ -162,9 +206,10 @@ export default function OnlyOfficeDocx({
     run()
     return () => {
       cancelled = true
+      window.clearTimeout(stallTimer)
       tearDown()
     }
-  }, [templateId, mode, admin, revision, containerId, tearDown])
+  }, [templateId, submissionId, mode, admin, revision, containerId, tearDown])
 
   return (
     <div
@@ -192,7 +237,8 @@ export default function OnlyOfficeDocx({
       )}
       <div
         ref={hostRef}
-        className={`min-h-0 flex-1 basis-0 overflow-hidden w-full ${phase === 'ready' || phase === 'loading' ? '' : 'hidden'}`}
+        className={`relative z-0 min-h-0 flex-1 basis-0 overflow-hidden w-full ${phase === 'ready' || phase === 'loading' ? '' : 'hidden'}`}
+        style={{ minHeight: 'max(360px, calc(100svh - 11rem))' }}
       />
     </div>
   )

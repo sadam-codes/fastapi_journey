@@ -12,6 +12,8 @@ from helpers.form_text_extract import extract_plain_text_from_upload
 from models.form_flow import FormSubmission, FormTemplate
 from models.user import User
 from schemas.form_schemas import (
+    AdminSubmissionDetailResponse,
+    AdminSubmissionListItem,
     SubmitBody,
     SubmitResponse,
     TemplateDetailResponse,
@@ -87,12 +89,9 @@ async def admin_upload_template(
         extracted_text=text[:500_000],
         fields_schema=schema,
     )
-    msg = "Template saved; form fields are taken only from {{field_name}} placeholders."
-    if not schema:
-        msg = (
-            "Template saved but no {{field_name}} placeholders were found in the text. "
-            "Wrap each fill-in in double braces, e.g. {{date}}, {{client_name}}, then re-upload."
-        )
+    msg = "Template saved."
+    if schema:
+        msg = "Template saved. Fill-in fields come from {{field_name}} placeholders in the text."
     return UploadResponse(
         id=doc.id,
         title=doc.title,
@@ -164,16 +163,14 @@ async def admin_update_template(
     t.fields_schema = schema
     t.original_filename = filename[:255]
     t.mime_type = (content_type or "")[:128] or None
+    t.oo_key_nonce = (getattr(t, "oo_key_nonce", None) or 0) + 1
     if title_clean:
         t.title = title_clean[:255]
     await t.save()
 
-    msg = "Template file replaced; form fields follow {{field_name}} placeholders only."
-    if not schema:
-        msg = (
-            "File updated but no {{field_name}} placeholders were found. "
-            "Add markers such as {{date}}, {{client_name}}, then save again."
-        )
+    msg = "Template file replaced."
+    if schema:
+        msg = "Template file replaced. Fill-in fields follow {{field_name}} placeholders in the text."
     return UploadResponse(
         id=t.id,
         title=t.title,
@@ -378,3 +375,68 @@ async def list_submissions_for_user(user: dict) -> list[dict[str, Any]]:
         )
     return out
 
+
+async def admin_list_submissions() -> list[AdminSubmissionListItem]:
+    rows = await FormSubmission.all().order_by("-created_at").select_related("template", "user")
+    out: list[AdminSubmissionListItem] = []
+    for s in rows:
+        tpl = s.template
+        usr = s.user
+        out.append(
+            AdminSubmissionListItem(
+                id=s.id,
+                template_id=tpl.id,
+                template_title=tpl.title,
+                user_id=usr.id,
+                user_email=usr.email,
+                user_name=str(getattr(usr, "name", None) or ""),
+                filled_filename=s.filled_filename,
+                has_filled_file=bool(s.filled_file_blob),
+                created_at=s.created_at,
+            )
+        )
+    return out
+
+
+async def admin_get_submission_detail(submission_id: int) -> AdminSubmissionDetailResponse:
+    sub = await FormSubmission.filter(id=submission_id).select_related("template", "user").first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    tpl = sub.template
+    usr = sub.user
+    raw_answers = sub.answers or {}
+    answers = {str(k): str(v) if v is not None else "" for k, v in raw_answers.items()}
+    return AdminSubmissionDetailResponse(
+        id=sub.id,
+        template_id=tpl.id,
+        template_title=tpl.title,
+        template_original_filename=tpl.original_filename,
+        fields_schema=list(tpl.fields_schema or []),
+        user_id=usr.id,
+        user_email=usr.email,
+        user_name=str(getattr(usr, "name", None) or ""),
+        answers=answers,
+        filled_filename=sub.filled_filename,
+        has_filled_file=bool(sub.filled_file_blob),
+        created_at=sub.created_at,
+    )
+
+
+async def admin_submission_filled_preview_response(submission_id: int) -> StreamingResponse:
+    """Inline stream of merged submission file for admin browser preview (PDF / image / etc.)."""
+    sub = await FormSubmission.filter(id=submission_id).first()
+    if not sub or not sub.filled_file_blob:
+        raise HTTPException(status_code=404, detail="Submission or filled file not found.")
+    raw = bytes(sub.filled_file_blob)
+    name = sub.filled_filename or f"submission_{submission_id}"
+    guessed, _ = mimetypes.guess_type(name)
+    media_type = guessed or (sub.filled_mime_type or "application/octet-stream")
+    safe = name.replace("\r", " ").replace("\n", " ").replace('"', "'")[:200]
+    return StreamingResponse(
+        BytesIO(raw),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{safe}"',
+            "Cache-Control": "private, no-store",
+        },
+    )

@@ -1,0 +1,26 @@
+# Example: ONLYOFFICE Document Server + host reachability to the FastAPI app on the host.
+# Copy/adapt into your compose stack. PUBLIC_APP_URL must be a URL the *documentserver* container can open.
+#
+# Windows / Mac Docker Desktop:
+#   PUBLIC_APP_URL=http://host.docker.internal:8000
+#
+# Linux (Docker 20.10+): host.docker.internal is not always defined; add:
+#   extra_hosts:
+#     - "host.docker.internal:host-gateway"
+#
+# Run the API so Docker can connect: uvicorn main:app --host 0.0.0.0 --port 8000
+#
+# Verify from inside the documentserver container:
+#   curl -sS http://host.docker.internal:8000/health
+
+services:
+  onlyoffice-documentserver:
+    image: onlyoffice/documentserver:latest
+    ports:
+      - "8080:80"
+    environment:
+      # Match your backend .env ONLYOFFICE_JWT_SECRET
+      - JWT_ENABLED=true
+      - JWT_SECRET=change-me-to-match-backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

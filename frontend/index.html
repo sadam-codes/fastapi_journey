@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- OnlyOffice api.js registers unload; Chrome otherwise logs a Permissions-Policy violation. -->
+    <meta http-equiv="Permissions-Policy" content="unload=(self)" />
     <title>frontend</title>
   </head>
   <body>

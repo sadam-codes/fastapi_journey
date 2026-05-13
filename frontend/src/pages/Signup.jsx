@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, setToken } from '../api'
 import PasswordField from '../components/PasswordField.jsx'
+import { toastError, toastSuccess } from '../toast.js'
 import {
   btnPrimaryClass,
   GlassCard,
@@ -14,12 +15,10 @@ export default function Signup() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function onSubmit(e) {
     e.preventDefault()
-    setErr('')
     setBusy(true)
     try {
       const data = await api('/auth/signup', {
@@ -27,9 +26,10 @@ export default function Signup() {
         body: { name, email, password },
       })
       if (data.token) setToken(data.token)
+      toastSuccess('Welcome! Your account is ready.')
       nav('/user/forms')
     } catch (ex) {
-      setErr(ex.message)
+      toastError(ex.message)
     } finally {
       setBusy(false)
     }
@@ -85,11 +85,6 @@ export default function Signup() {
               placeholder="At least 6 characters"
             />
           </label>
-          {err && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-              {err}
-            </p>
-          )}
           <button type="submit" disabled={busy} className={`mt-1 ${btnPrimaryClass}`}>
             {busy ? 'Creating your account…' : 'Sign up'}
           </button>
@@ -108,7 +103,7 @@ export default function Signup() {
       </GlassCard>
 
       <p className="mt-8 text-center text-sm text-slate-500">
-        <Link to="/" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
+        <Link to="/home" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
           ← Back to home
         </Link>
       </p>

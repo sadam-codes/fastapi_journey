@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, getToken, setToken } from '../api'
+import { toastError } from '../toast.js'
 import { GlassCard, UserAreaLayout, btnMutedClass, btnSecondaryClass } from '../components/UserAreaLayout.jsx'
 
 export default function UserForms() {
   const nav = useNavigate()
   const [rows, setRows] = useState([])
-  const [err, setErr] = useState('')
+  const [loadFailed, setLoadFailed] = useState(false)
 
   function logout() {
     setToken(null)
@@ -20,9 +21,11 @@ export default function UserForms() {
     }
     ;(async () => {
       try {
+        setLoadFailed(false)
         setRows(await api('/forms/templates'))
       } catch (e) {
-        setErr(e.message)
+        setLoadFailed(true)
+        toastError(e.message)
       }
     })()
   }, [nav])
@@ -51,10 +54,7 @@ export default function UserForms() {
         </div>
 
         <div className="p-6 sm:px-8 sm:pb-8 sm:pt-2">
-          {err && (
-            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>
-          )}
-          {rows.length === 0 && !err ? (
+          {rows.length === 0 && !loadFailed ? (
             <p className="mt-4 text-sm leading-relaxed text-slate-600">
               No templates available yet. Ask an admin to upload one.
             </p>
@@ -79,7 +79,7 @@ export default function UserForms() {
       </GlassCard>
 
       <p className="mt-8 text-center text-sm text-slate-500 sm:text-left">
-        <Link to="/" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
+        <Link to="/home" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">
           ← Back to home
         </Link>
       </p>

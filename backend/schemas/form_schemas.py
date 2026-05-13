@@ -47,3 +47,30 @@ class SubmitResponse(BaseModel):
     submission_id: int
     filled_filename: str
     message: str
+
+
+class AdminSubmissionListItem(BaseModel):
+    id: int
+    template_id: int
+    template_title: str
+    user_id: int
+    user_email: str
+    user_name: str
+    filled_filename: str | None
+    has_filled_file: bool
+    created_at: datetime
+
+
+class AdminSubmissionDetailResponse(BaseModel):
+    id: int
+    template_id: int
+    template_title: str
+    template_original_filename: str
+    fields_schema: list[dict[str, Any]]
+    user_id: int
+    user_email: str
+    user_name: str
+    answers: dict[str, str]
+    filled_filename: str | None
+    has_filled_file: bool
+    created_at: datetime

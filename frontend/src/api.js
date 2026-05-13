@@ -74,6 +74,36 @@ export async function fetchTemplatePreview(templateId, revision = 0) {
   return { blob, contentType }
 }
 
+/** Admin: merged submission file for in-browser preview (auth required). */
+export async function fetchSubmissionFilledPreview(submissionId, revision = 0) {
+  const token = getToken()
+  const qs = new URLSearchParams()
+  if (revision != null) qs.set('v', String(revision))
+  const q = qs.toString() ? `?${qs.toString()}` : ''
+  const res = await fetch(`${base}/forms/admin/submissions/${submissionId}/preview${q}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: 'no-store',
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = res.statusText
+    try {
+      const data = text ? JSON.parse(text) : null
+      if (typeof data === 'object' && data && data.detail) {
+        msg = Array.isArray(data.detail)
+          ? data.detail.map((d) => (typeof d === 'object' && d.msg ? d.msg : String(d))).join(', ')
+          : String(data.detail)
+      }
+    } catch {
+      if (text) msg = text.slice(0, 200)
+    }
+    throw new Error(msg || `HTTP ${res.status}`)
+  }
+  const blob = await res.blob()
+  const contentType = res.headers.get('content-type') || blob.type || ''
+  return { blob, contentType }
+}
+
 /** Admin: download original template file for editing locally. */
 export async function downloadAdminTemplate(templateId, fallbackFilename = '') {
   const token = getToken()

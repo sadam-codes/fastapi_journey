@@ -15,9 +15,16 @@ export const fileInputClass =
   'mt-2 block w-full text-sm text-slate-600 file:mr-4 file:cursor-pointer file:rounded-xl file:border-0 file:bg-gradient-to-r file:from-indigo-600 file:to-violet-600 file:px-4 file:py-2.5 file:text-sm file:font-semibold file:text-white file:shadow-md hover:file:from-indigo-500 hover:file:to-violet-500'
 
 /** Shared light gradient shell (signup, login, forms, admin, home). */
-export function UserAreaLayout({ children, wide = false, centerContent = true }) {
-  const maxW = wide ? 'max-w-4xl' : 'max-w-lg'
-  const yPad = centerContent ? 'py-12 sm:py-16' : 'py-10 sm:py-12'
+export function UserAreaLayout({
+  children,
+  wide = false,
+  centerContent = true,
+  maxWidthClass,
+  paddingClass = 'px-5 sm:px-8',
+  paddingYClass,
+}) {
+  const maxW = maxWidthClass ?? (wide ? 'max-w-4xl' : 'max-w-lg')
+  const yPad = paddingYClass ?? (centerContent ? 'py-12 sm:py-16' : 'py-10 sm:py-12')
   const justify = centerContent ? 'justify-center' : 'justify-start'
 
   return (
@@ -31,7 +38,7 @@ export function UserAreaLayout({ children, wide = false, centerContent = true })
         }}
       />
       <div
-        className={`relative mx-auto flex min-h-svh flex-col px-5 sm:px-8 ${maxW} ${justify} ${yPad}`}
+        className={`relative mx-auto flex min-h-svh w-full flex-col ${paddingClass} ${maxW} ${justify} ${yPad}`}
       >
         {children}
       </div>
