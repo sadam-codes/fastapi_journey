@@ -30,15 +30,6 @@ logger = logging.getLogger(__name__)
 ONLYOFFICE_DOCUMENT_SERVER_URL = (os.getenv("ONLYOFFICE_DOCUMENT_SERVER_URL") or "").strip().rstrip("/")
 ONLYOFFICE_JWT_SECRET = (os.getenv("ONLYOFFICE_JWT_SECRET") or "").strip()
 PUBLIC_APP_URL = (os.getenv("PUBLIC_APP_URL") or "http://127.0.0.1:8000").strip().rstrip("/")
-# After Save, Document Server POSTs the edited file to:
-#   {PUBLIC_APP_URL}/forms/internal/onlyoffice/callback
-# That URL must be reachable FROM the document server container (not from the browser).
-# Docker Desktop (Windows/Mac): http://host.docker.internal:8000
-# Linux Docker: add extra_hosts host.docker.internal:host-gateway, or use your LAN IP, and run uvicorn --host 0.0.0.0
-# Document Server (Docker) often ships with JWT enabled. If we send no token, the editor shows
-# "The document security token is not correctly formed."
-# - Explicit ONLYOFFICE_ENABLE_JWT=false disables signing even when a secret is set.
-# - Otherwise, when ONLYOFFICE_JWT_SECRET is set, we sign automatically (matches Docker JWT_SECRET).
 _explicit_jwt = (os.getenv("ONLYOFFICE_ENABLE_JWT") or "").strip().lower()
 if _explicit_jwt in ("0", "false", "no", "off"):
     ONLYOFFICE_ENABLE_JWT = False
@@ -46,9 +37,7 @@ elif _explicit_jwt in ("1", "true", "yes", "on"):
     ONLYOFFICE_ENABLE_JWT = True
 else:
     ONLYOFFICE_ENABLE_JWT = bool(ONLYOFFICE_JWT_SECRET)
-
 MAX_UPLOAD_BYTES = int(os.getenv("FORM_MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
-# How long forcesave waits for the callback to persist the file (polls DB file_version).
 ONLYOFFICE_CALLBACK_POLL_SECONDS = float(os.getenv("ONLYOFFICE_CALLBACK_POLL_SECONDS", "35"))
 
 
@@ -183,7 +172,7 @@ def _parse_template_id_from_oo_key(key: str | None) -> int | None:
 
 def _callback_status_int(val: Any) -> int:
     try:
-        return int(val)  # type: ignore[arg-type]
+        return int(val)  
     except (TypeError, ValueError):
         return -1
 
@@ -255,7 +244,6 @@ async def onlyoffice_bootstrap(
     else:
         doc_key = _view_document_key(t.id, int(view_cache_bust) or 0)
     dl_jwt = _create_download_jwt(template_id=t.id, user=user)
-    # JWT query values must be percent-encoded (+ and / break many HTTP clients if raw).
     document_url = (
         f"{PUBLIC_APP_URL}/forms/internal/onlyoffice/document?token={quote(dl_jwt, safe='')}"
     )
@@ -311,8 +299,6 @@ async def onlyoffice_bootstrap(
         "height": "100%",
         "width": "100%",
         "type": "desktop",
-        # Must be part of the signed payload; the browser adds real handlers client-side.
-        # If this key is missing from the JWT but present in the final config, verification fails.
         "events": {},
     }
 
@@ -697,21 +683,46 @@ async def onlyoffice_process_callback(
         if not t:
             return _onlyoffice_callback_fail("template_not_found", template_id=tid)
 
-        text = extract_plain_text_from_upload(filename=t.original_filename or "x.docx", raw=new_raw)
-        if not text.strip():
-            prev = (t.extracted_text or "").strip()
-            text = (prev[:500_000] if prev else " ")
-
-        detected = detect_dynamic_fields(text)
-        schema = normalize_field_schema(
-            merge_detected_with_saved_input_types(list(t.fields_schema or []), detected)
-        )
-        t.file_blob = new_raw
-        t.extracted_text = text[:500_000]
-        t.fields_schema = schema
+        saved_schema = list(t.fields_schema or [])
         new_ver = int(getattr(t, "file_version", None) or 0) + 1
+        t.file_blob = new_raw
         t.file_version = new_ver
-        await t.save()
-        logger.info("onlyoffice_callback saved template_id=%s file_version=%s status=%s", tid, new_ver, status_int)
+        # Persist bytes first so admin "Save" / forcesave polling returns without waiting
+        # for full DOCX text extraction and placeholder detection.
+        await t.save(update_fields=["file_blob", "file_version"])
+
+        async def _refresh_extracted_and_schema() -> None:
+            t2 = await FormTemplate.get_or_none(id=tid)
+            if not t2 or int(getattr(t2, "file_version", None) or 0) != new_ver:
+                return
+            try:
+                text = extract_plain_text_from_upload(
+                    filename=t2.original_filename or "x.docx", raw=new_raw
+                )
+                if not text.strip():
+                    prev = (t2.extracted_text or "").strip()
+                    text = (prev[:500_000] if prev else " ")
+                detected = detect_dynamic_fields(text)
+                schema = normalize_field_schema(
+                    merge_detected_with_saved_input_types(saved_schema, detected)
+                )
+                t2.extracted_text = text[:500_000]
+                t2.fields_schema = schema
+                await t2.save(update_fields=["extracted_text", "fields_schema"])
+            except Exception:
+                logger.exception(
+                    "onlyoffice_callback saved blob but schema refresh failed template_id=%s file_version=%s",
+                    tid,
+                    new_ver,
+                )
+
+        asyncio.create_task(_refresh_extracted_and_schema())
+
+        logger.info(
+            "onlyoffice_callback saved template_id=%s file_version=%s status=%s",
+            tid,
+            new_ver,
+            status_int,
+        )
 
     return {"error": 0}

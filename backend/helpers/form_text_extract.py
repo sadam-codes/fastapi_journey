@@ -28,6 +28,10 @@ def extract_text_from_pdf(raw: bytes) -> str:
 
 
 def extract_text_from_docx(raw: bytes) -> str:
+    """Plain text in the same block order as merge (`form_fill` / `docx_text_blocks`).
+
+    Includes empty paragraphs so duplicate-placeholder detection matches DOCX fill order.
+    """
     try:
         from docx import Document
     except ImportError as exc:
@@ -39,15 +43,24 @@ def extract_text_from_docx(raw: bytes) -> str:
     doc = Document(io.BytesIO(raw))
     parts: list[str] = []
     for p in doc.paragraphs:
-        if p.text.strip():
-            parts.append(p.text)
+        parts.append("".join(r.text for r in p.runs))
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    if p.text.strip():
-                        parts.append(p.text)
-    return "\n".join(parts).strip()
+                    parts.append("".join(r.text for r in p.runs))
+    for sec in doc.sections:
+        for hf in (sec.header, sec.footer):
+            if hf is None:
+                continue
+            for p in hf.paragraphs:
+                parts.append("".join(r.text for r in p.runs))
+            for table in hf.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            parts.append("".join(r.text for r in p.runs))
+    return "\n".join(parts)
 
 
 def extract_text_from_image(raw: bytes) -> str:

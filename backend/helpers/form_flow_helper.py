@@ -219,9 +219,9 @@ async def admin_get_template_detail(template_id: int) -> TemplateDetailResponse:
 async def admin_patch_template_field_types(
     template_id: int,
     *,
-    updates: list[dict[str, str]],
+    updates: list[dict[str, Any]],
 ) -> TemplateDetailResponse:
-    """Set input_type per detected field key (text, date, signature, …)."""
+    """Set input_type per field; optional ``radio_group`` / ``radio_option`` for ``radio`` rows."""
     t = await FormTemplate.get_or_none(id=template_id)
     if not t:
         raise HTTPException(status_code=404, detail="Form template not found.")
@@ -238,6 +238,20 @@ async def admin_patch_template_field_types(
                 detail=f"Invalid input_type for {key!r}: {it!r}. Allowed: {', '.join(sorted(ALLOWED_INPUT_TYPES))}.",
             )
         by_key[key]["input_type"] = it
+        if it == "radio":
+            rg = item.get("radio_group")
+            if rg is not None:
+                by_key[key]["radio_group"] = str(rg).strip()[:128] if str(rg).strip() else None
+                if not by_key[key]["radio_group"]:
+                    by_key[key].pop("radio_group", None)
+            ro = item.get("radio_option")
+            if ro is not None:
+                by_key[key]["radio_option"] = str(ro).strip()[:256] if str(ro).strip() else None
+                if not by_key[key]["radio_option"]:
+                    by_key[key].pop("radio_option", None)
+        else:
+            by_key[key].pop("radio_group", None)
+            by_key[key].pop("radio_option", None)
     new_schema = [normalize_field_schema([by_key[str(r["key"])]])[0] for r in current_list if r.get("key")]
     t.fields_schema = new_schema
     await t.save()
@@ -335,6 +349,91 @@ async def template_preview_response(template_id: int, user: dict) -> StreamingRe
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _radio_allowed_options(schema: list[dict[str, Any]], group: str) -> set[str]:
+    opts: set[str] = set()
+    g = group.strip()
+    for row in schema:
+        if str(row.get("input_type") or "").lower() != "radio":
+            continue
+        rgs = str(row.get("radio_group") or "").strip()
+        if rgs != g:
+            continue
+        opt = str(row.get("radio_option") or row.get("key") or "").strip()
+        if opt:
+            opts.add(opt)
+    return opts
+
+
+def _normalize_radio_submission(schema: list[dict[str, Any]], group: str, raw: Any) -> str:
+    s = "" if raw is None else str(raw).strip()
+    if not s:
+        return ""
+    allowed = _radio_allowed_options(schema, group)
+    if not allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No radio options configured for group {group!r}.",
+        )
+    if s in allowed:
+        return s
+    lower_map = {a.lower(): a for a in allowed}
+    hit = lower_map.get(s.lower())
+    if hit is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid radio choice for {group!r}: {raw!r}. Allowed: {', '.join(sorted(allowed))}.",
+        )
+    return hit
+
+
+def _build_answers_from_submit(schema: list[dict[str, Any]], body: SubmitBody) -> dict[str, str]:
+    src = dict(body.answers or {})
+    out: dict[str, str] = {}
+    seen_radio: set[str] = set()
+    for row in schema:
+        if str(row.get("input_type") or "").lower() != "radio":
+            continue
+        rg = str(row.get("radio_group") or "").strip()
+        gkey = rg if rg else str(row.get("key", ""))
+        if not gkey or gkey in seen_radio:
+            continue
+        seen_radio.add(gkey)
+        out[gkey] = _normalize_radio_submission(schema, gkey, src.get(gkey))
+
+    for row in schema:
+        if str(row.get("input_type") or "").lower() == "radio":
+            continue
+        key = str(row["key"])
+        if key in out:
+            continue
+        out[key] = _answer_value_for_type(row, src.get(key))
+    return out
+
+
+def _missing_answer_keys(schema: list[dict[str, Any]], answers: dict[str, str]) -> list[str]:
+    missing: list[str] = []
+    seen_radio: set[str] = set()
+    for row in schema:
+        it = str(row.get("input_type") or "text").strip().lower()
+        if it == "checkbox":
+            continue
+        if it == "radio":
+            gkey = str(row.get("radio_group") or row.get("key") or "").strip()
+            if not gkey:
+                continue
+            if str(row.get("radio_group") or "").strip():
+                if gkey in seen_radio:
+                    continue
+                seen_radio.add(gkey)
+            if row.get("required") is True and not (answers.get(gkey) or "").strip():
+                missing.append(gkey)
+            continue
+        key = str(row["key"])
+        if _answer_is_empty(row, answers.get(key, "")):
+            missing.append(key)
+    return missing
+
+
 def _answer_value_for_type(row: dict[str, Any], raw: Any) -> str:
     """Normalize client answer to a string stored in DB and used for merge."""
     it = str(row.get("input_type") or "text").strip().lower()
@@ -346,7 +445,8 @@ def _answer_value_for_type(row: dict[str, Any], raw: Any) -> str:
         low = s.lower()
         return "true" if low in ("true", "1", "yes", "on") else ""
 
-    if it == "number":
+    if it == "radio":
+        return s
         if not s:
             return ""
         try:
@@ -411,7 +511,10 @@ def _answer_is_empty(row: dict[str, Any], stored: str) -> bool:
     if it not in ALLOWED_INPUT_TYPES:
         it = "text"
     if it == "checkbox":
-        return stored not in ("true", "1", "yes", "on")
+        # Unchecked is a valid answer (☐ in merge); never block submit for "empty" checkbox.
+        return False
+    if it == "radio":
+        return False
     return not (stored or "").strip()
 
 
@@ -427,12 +530,8 @@ async def submit_template_answers(
     schema = normalize_field_schema(list(template.fields_schema or []))
     if not schema:
         raise HTTPException(status_code=400, detail="This template has no detected fields to fill.")
-    answers: dict[str, str] = {}
-    for row in schema:
-        key = str(row["key"])
-        raw = body.answers.get(key)
-        answers[key] = _answer_value_for_type(row, raw)
-    missing = [row["key"] for row in schema if _answer_is_empty(row, answers.get(str(row["key"]), ""))]
+    answers = _build_answers_from_submit(schema, body)
+    missing = _missing_answer_keys(schema, answers)
     if missing:
         raise HTTPException(
             status_code=400,

@@ -76,11 +76,20 @@ const FIELD_TYPE_OPTIONS = [
   { value: 'tel', label: 'Phone' },
   { value: 'date', label: 'Date' },
   { value: 'checkbox', label: 'Checkbox' },
+  { value: 'radio', label: 'Radio' },
   { value: 'signature', label: 'Signature' },
 ]
 
+/** Shared HTML `name` for radios: form section from the doc (`group_label`), else the field key. */
+function inferredRadioGroup(row) {
+  const gl = row.group_label != null ? String(row.group_label).trim() : ''
+  if (gl) return gl.slice(0, 128)
+  return String(row.key || '').trim().slice(0, 128)
+}
+
 export function AdminTemplateFieldsTab() {
   const { template, detail, reload } = useOutletContext()
+  const confirm = useConfirm()
   const [rows, setRows] = useState([])
   const [busy, setBusy] = useState(false)
 
@@ -97,12 +106,54 @@ export function AdminTemplateFieldsTab() {
     if (!template) return
     setBusy(true)
     try {
-      const fields = rows.map((r) => ({
-        key: r.key,
-        input_type: (r.input_type || 'text').toLowerCase(),
-      }))
+      const fields = rows.map((r) => {
+        const it = (r.input_type || 'text').toLowerCase()
+        const base = { key: r.key, input_type: it }
+        if (it === 'radio') {
+          base.radio_group = inferredRadioGroup(r)
+          base.radio_option = String(r.key || '').trim().slice(0, 256)
+        }
+        return base
+      })
       await patchAdminTemplateFieldTypes(template.id, { fields })
       toastSuccess('Field types saved.')
+      await reload()
+    } catch (ex) {
+      toastError(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Flow: {{a}}{{b}}… in doc → upload → rows here → all Checkbox → user ticks → merge ☑/☐. */
+  async function onSaveAllCheckboxes() {
+    if (!template || !rows.length) return
+    const ok = await confirm({
+      title: 'Save every field as Checkbox?',
+      message:
+        'Each row will be saved as Checkbox (filled file: ☑ if ticked, ☐ if not). Signature fields are left as Signature. Other types (text, date, …) become Checkbox — use only on checkbox-style templates.',
+      confirmLabel: 'Save all as Checkbox',
+      cancelLabel: 'Cancel',
+      variant: 'default',
+    })
+    if (!ok) return
+    setBusy(true)
+    try {
+      const fields = rows.map((r) => {
+        const it = (r.input_type || 'text').toLowerCase()
+        if (it === 'signature') return { key: r.key, input_type: 'signature' }
+        if (it === 'radio') {
+          return {
+            key: r.key,
+            input_type: 'radio',
+            radio_group: inferredRadioGroup(r),
+            radio_option: String(r.key || '').trim().slice(0, 256),
+          }
+        }
+        return { key: r.key, input_type: 'checkbox' }
+      })
+      await patchAdminTemplateFieldTypes(template.id, { fields })
+      toastSuccess('All applicable fields saved as Checkbox.')
       await reload()
     } catch (ex) {
       toastError(ex.message)
@@ -133,8 +184,14 @@ export function AdminTemplateFieldsTab() {
       <div>
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated fields</p>
         <p className="mt-1 text-sm text-slate-600">
-          Pick an input type for each placeholder. Use <span className="font-mono text-xs">{'{{name}}'}</span> in the
-          document.
+          One <span className="font-mono text-xs">{'{{placeholder}}'}</span> per field. Pick type per row, or use the
+          button below for an all-checkbox template (<span className="font-serif">☑</span> /{' '}
+          <span className="font-serif">☐</span> in the merged file).{' '}
+          <span className="font-medium text-slate-700">Radio:</span> rows that share the same form section (see each
+          card) are one mutually exclusive group; each placeholder is one option (value = that field's key).
+        </p>
+        <p className="mt-2 font-mono text-[11px] leading-relaxed text-slate-500">
+          doc → upload → detect rows → checkbox types → user form → merge
         </p>
       </div>
 
@@ -146,6 +203,9 @@ export function AdminTemplateFieldsTab() {
           >
             <p className="text-sm font-semibold text-slate-900">{r.label || r.key}</p>
             <p className="mt-0.5 font-mono text-xs text-slate-500">{r.key}</p>
+            {r.group_label ? (
+              <p className="mt-1 text-[11px] font-medium text-slate-600">Form section: {r.group_label}</p>
+            ) : null}
             {r.placeholders?.length ? (
               <p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={r.placeholders.join(' · ')}>
                 {r.placeholders.join(' · ')}
@@ -175,6 +235,9 @@ export function AdminTemplateFieldsTab() {
       <div className="flex flex-wrap gap-3">
         <button type="button" disabled={busy} className={btnPrimaryClass} onClick={() => void onSave()}>
           {busy ? 'Saving…' : 'Save field types'}
+        </button>
+        <button type="button" disabled={busy} className={btnSecondaryClass} onClick={() => void onSaveAllCheckboxes()}>
+          Save all as Checkbox
         </button>
       </div>
     </div>

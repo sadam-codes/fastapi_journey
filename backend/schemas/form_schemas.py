@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -32,6 +34,8 @@ class UploadResponse(BaseModel):
 class FieldTypeUpdateItem(BaseModel):
     key: str = Field(..., min_length=1, max_length=256)
     input_type: str = Field(..., min_length=1, max_length=32)
+    radio_group: Optional[str] = Field(default=None, max_length=128)
+    radio_option: Optional[str] = Field(default=None, max_length=256)
 
 
 class PatchFieldTypesBody(BaseModel):

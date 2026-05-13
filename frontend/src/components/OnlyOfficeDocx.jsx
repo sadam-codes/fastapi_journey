@@ -47,10 +47,23 @@ async function fetchBootstrap(templateId, submissionId, mode, admin, viewCacheBu
       url += `&v=${encodeURIComponent(String(viewCacheBust))}`
     }
   }
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-    cache: 'no-store',
-  })
+  const ctrl = new AbortController()
+  const abortT = window.setTimeout(() => ctrl.abort(), 60_000)
+  let res
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+      cache: 'no-store',
+      signal: ctrl.signal,
+    })
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('Timed out waiting for OnlyOffice config from the API (60s).')
+    }
+    throw e
+  } finally {
+    window.clearTimeout(abortT)
+  }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const d = data.detail
@@ -95,6 +108,8 @@ export default function OnlyOfficeDocx({
 
   const [phase, setPhase] = useState('loading')
   const [hint, setHint] = useState('')
+  /** Where time is spent while phase === 'loading' (helps debug stuck opens). */
+  const [loadStep, setLoadStep] = useState('config')
 
   const tearDown = useCallback(() => {
     const ed = editorRef.current
@@ -119,6 +134,7 @@ export default function OnlyOfficeDocx({
 
     async function run() {
       setPhase('loading')
+      setLoadStep('config')
       setHint('')
       tearDown()
 
@@ -147,14 +163,18 @@ export default function OnlyOfficeDocx({
           return
         }
 
+        setLoadStep('sdk')
         await loadSdkOnce(boot.sdkUrl)
         if (cancelled) return
         if (!window.DocsAPI) {
           throw new Error('OnlyOffice API not available after loading script.')
         }
 
+        setLoadStep('document')
         const el = hostRef.current
-        if (!el) return
+        if (!el) {
+          throw new Error('Editor area not mounted. Try refreshing the page.')
+        }
         el.innerHTML = `<div id="${containerId}" class="h-full w-full min-h-0" style="height:100%"></div>`
 
         const cfg = JSON.parse(JSON.stringify(boot.config))
@@ -222,6 +242,12 @@ export default function OnlyOfficeDocx({
             aria-hidden
           />
           <p className="text-sm font-medium text-slate-600">Opening document…</p>
+          <p className="max-w-sm px-4 text-center text-xs leading-relaxed text-slate-500">
+            {loadStep === 'config' && 'Getting editor settings from your API.'}
+            {loadStep === 'sdk' && 'Loading OnlyOffice from the Document Server (can take a while the first time).'}
+            {loadStep === 'document' &&
+              'loading...'}
+          </p>
         </div>
       )}
       {phase === 'unavailable' && (

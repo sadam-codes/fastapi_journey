@@ -1,5 +1,6 @@
 import base64
 import io
+from collections import defaultdict
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -40,13 +41,76 @@ def _signature_fallback_text(val: str) -> str:
     return "[Signed electronically]" if val and val.strip() else ""
 
 
-def _placeholder_specs(schema: list[dict[str, Any]], answers: dict[str, Any]) -> list[tuple[str, str | bytes]]:
-    """Each placeholder maps to replacement text (str) or PNG bytes for inline image."""
-    out: list[tuple[str, str | bytes]] = []
+def _checkbox_merge_replacement(raw: Any) -> str:
+    """Checked/unchecked as ballot symbols — avoids printing true/false/yes/no in documents."""
+    if raw is True:
+        checked = True
+    elif raw is False or raw is None:
+        checked = False
+    else:
+        s = str(raw).strip().lower()
+        checked = s in ("true", "1", "yes", "on")
+    # ☑ checked; ☐ empty box for unchecked (multi-select leaves other boxes blank)
+    return "\u2611" if checked else "\u2610"
+
+
+def _paragraph_plain_preserving_tabs(paragraph: Any) -> str:
+    """Paragraph text including Word tab stops (``<w:tab/>``), not only ``run.text``.
+
+    ``"".join(r.text for r in p.runs)`` drops tabs, which breaks alignment (e.g. right-side labels).
+    """
+    try:
+        from docx.oxml.ns import qn
+    except ImportError:
+        return "".join(r.text for r in paragraph.runs)
+
+    parts: list[str] = []
+    for run in paragraph.runs:
+        for child in list(run._element):
+            t = child.tag
+            if t == qn("w:t"):
+                parts.append(child.text or "")
+            elif t == qn("w:tab"):
+                parts.append("\t")
+            elif t == qn("w:br"):
+                parts.append("\n")
+
+    out = "".join(parts)
+    if out == "" and paragraph.text:
+        return "".join(r.text for r in paragraph.runs)
+    return out
+
+
+def _spec_placeholders_match_index(row: dict[str, Any]) -> int | None:
+    raw = row.get("placeholder_match_index")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _placeholder_specs(
+    schema: list[dict[str, Any]], answers: dict[str, Any]
+) -> list[tuple[str, str | bytes, int | None]]:
+    """Each entry is (placeholder, replacement, occurrence_index or None).
+
+    ``occurrence_index`` is 0-based among identical placeholder strings in scan order
+    (see ``detect_dynamic_fields``). ``None`` means every occurrence of ``placeholder``
+    gets the same replacement (legacy rows without ``placeholder_match_index``).
+    """
+    out: list[tuple[str, str | bytes, int | None]] = []
     for row in schema:
         key = row["key"]
-        val = str(answers.get(key, "") if answers.get(key) is not None else "")
         it = str(row.get("input_type") or "text").strip().lower()
+        rg = str(row.get("radio_group") or "").strip()
+        if it == "radio" and rg:
+            raw_ans = answers.get(rg)
+        else:
+            raw_ans = answers.get(key)
+        val = str(raw_ans if raw_ans is not None else "")
+        midx = _spec_placeholders_match_index(row)
         for ph in row.get("placeholders", []) or []:
             phs = str(ph)
             if not phs:
@@ -54,16 +118,28 @@ def _placeholder_specs(schema: list[dict[str, Any]], answers: dict[str, Any]) ->
             if it == "signature":
                 img = _image_bytes_for_embed(val)
                 if img:
-                    out.append((phs, img))
+                    out.append((phs, img, midx))
                 else:
-                    out.append((phs, _signature_fallback_text(val)))
+                    out.append((phs, _signature_fallback_text(val), midx))
+            elif it == "checkbox":
+                out.append((phs, _checkbox_merge_replacement(raw_ans), midx))
+            elif it == "radio":
+                opt = str(row.get("radio_option") or key).strip()
+                sel = val.strip()
+                out.append(
+                    (phs, _checkbox_merge_replacement(bool(sel) and sel.lower() == opt.lower()), midx)
+                )
             else:
-                out.append((phs, val))
+                out.append((phs, val, midx))
     out.sort(key=lambda x: -len(x[0]))
     return out
 
 
-def _full_string_to_segments(full: str, specs: list[tuple[str, str | bytes]]) -> list[str | bytes]:
+def _full_string_to_segments(
+    full: str,
+    specs: list[tuple[str, str | bytes, int | None]],
+    occ_state: defaultdict[str, int],
+) -> list[str | bytes]:
     """Split document text into alternating literal strings and raw PNG segments."""
     out: list[str | bytes] = []
     buf: list[str] = []
@@ -78,16 +154,21 @@ def _full_string_to_segments(full: str, specs: list[tuple[str, str | bytes]]) ->
 
     while i < n:
         matched = False
-        for ph, repl in specs:
-            if ph and full.startswith(ph, i):
-                flush_buf()
-                if isinstance(repl, bytes):
-                    out.append(repl)
-                elif repl:
-                    out.append(repl)
-                i += len(ph)
-                matched = True
-                break
+        for ph, repl, midx in specs:
+            if not ph or not full.startswith(ph, i):
+                continue
+            k = occ_state[ph]
+            if midx is not None and midx != k:
+                continue
+            flush_buf()
+            if isinstance(repl, bytes):
+                out.append(repl)
+            elif repl:
+                out.append(repl)
+            i += len(ph)
+            occ_state[ph] = k + 1
+            matched = True
+            break
         if not matched:
             buf.append(full[i])
             i += 1
@@ -95,7 +176,12 @@ def _full_string_to_segments(full: str, specs: list[tuple[str, str | bytes]]) ->
     return out
 
 
-def _rebuild_docx_paragraph(paragraph, full: str, specs: list[tuple[str, str | bytes]]) -> None:
+def _rebuild_docx_paragraph(
+    paragraph,
+    full: str,
+    specs: list[tuple[str, str | bytes, int | None]],
+    occ_state: defaultdict[str, int],
+) -> None:
     try:
         from docx.oxml.ns import qn
         from docx.shared import Inches
@@ -105,7 +191,7 @@ def _rebuild_docx_paragraph(paragraph, full: str, specs: list[tuple[str, str | b
             detail="DOCX support is not available.",
         ) from exc
 
-    segments = _full_string_to_segments(full, specs)
+    segments = _full_string_to_segments(full, specs, occ_state)
     p_el = paragraph._element
     for child in list(p_el):
         if child.tag != qn("w:pPr"):
@@ -150,15 +236,41 @@ def fill_docx(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any]
 
     doc = Document(io.BytesIO(blob))
     specs = _placeholder_specs(schema, answers)
+    occ_state: defaultdict[str, int] = defaultdict(int)
     for p in _iter_docx_paragraphs(doc):
-        full = "".join(r.text for r in p.runs)
-        if not full or not any(ph in full for ph, _ in specs):
+        full = _paragraph_plain_preserving_tabs(p)
+        if not full or not any(ph in full for ph, _, __ in specs):
             continue
-        _rebuild_docx_paragraph(p, full, specs)
+        _rebuild_docx_paragraph(p, full, specs, occ_state)
 
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
+
+
+def _pdf_collect_hits(doc: Any, ph: str) -> list[tuple[Any, Any]]:
+    out: list[tuple[Any, Any]] = []
+    for page in doc:
+        for rect in page.search_for(ph):
+            out.append((page, rect))
+    return out
+
+
+def _pdf_redact_insert_text(page: Any, rect: Any, val: str) -> None:
+    try:
+        page.add_redact_annot(
+            rect,
+            text=val,
+            fontsize=10,
+            fontname="helv",
+            text_color=(0, 0, 0),
+            fill=(1, 1, 1),
+        )
+        page.apply_redactions()
+    except TypeError:
+        page.add_redact_annot(rect)
+        page.apply_redactions()
+        page.insert_text(rect.tl, val, fontsize=10, fontname="helv", color=(0, 0, 0))
 
 
 def fill_pdf(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any]) -> bytes:
@@ -172,16 +284,28 @@ def fill_pdf(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any])
 
     doc = fitz.open(stream=blob, filetype="pdf")
     specs = _placeholder_specs(schema, answers)
-    image_jobs = [(ph, repl) for ph, repl in specs if isinstance(repl, bytes)]
-    text_jobs = [(ph, repl) for ph, repl in specs if isinstance(repl, str)]
 
-    for page in doc:
-        for ph, img_bytes in image_jobs:
-            while True:
-                hits = page.search_for(ph)
-                if not hits:
-                    break
-                rect = hits[0]
+    image_specs = [s for s in specs if isinstance(s[1], bytes)]
+    text_specs = [s for s in specs if isinstance(s[1], str)]
+
+    for ph, img_bytes, midx in image_specs:
+        if midx is None:
+            for page in doc:
+                while True:
+                    hits = page.search_for(ph)
+                    if not hits:
+                        break
+                    rect = hits[0]
+                    page.add_redact_annot(rect)
+                    page.apply_redactions()
+                    try:
+                        page.insert_image(rect, stream=img_bytes, keep_proportion=True)
+                    except Exception:
+                        page.insert_image(rect, stream=img_bytes)
+        else:
+            hits = _pdf_collect_hits(doc, ph)
+            if midx < len(hits):
+                page, rect = hits[midx]
                 page.add_redact_annot(rect)
                 page.apply_redactions()
                 try:
@@ -189,26 +313,28 @@ def fill_pdf(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any])
                 except Exception:
                     page.insert_image(rect, stream=img_bytes)
 
-        for ph, val in text_jobs:
-            while True:
-                hits = page.search_for(ph)
-                if not hits:
-                    break
-                rect = hits[0]
-                try:
-                    page.add_redact_annot(
-                        rect,
-                        text=val,
-                        fontsize=10,
-                        fontname="helv",
-                        text_color=(0, 0, 0),
-                        fill=(1, 1, 1),
-                    )
-                    page.apply_redactions()
-                except TypeError:
-                    page.add_redact_annot(rect)
-                    page.apply_redactions()
-                    page.insert_text(rect.tl, val, fontsize=10, fontname="helv", color=(0, 0, 0))
+    text_specs_sorted = sorted(
+        text_specs,
+        key=lambda t: (
+            t[0],
+            1 if t[2] is None else 0,
+            0 if t[2] is None else -int(t[2]),
+        ),
+    )
+    for ph, val, midx in text_specs_sorted:
+        if midx is None:
+            for page in doc:
+                while True:
+                    hits = page.search_for(ph)
+                    if not hits:
+                        break
+                    rect = hits[0]
+                    _pdf_redact_insert_text(page, rect, val)
+        else:
+            hits = _pdf_collect_hits(doc, ph)
+            if midx < len(hits):
+                page, rect = hits[midx]
+                _pdf_redact_insert_text(page, rect, val)
 
     out = io.BytesIO()
     doc.save(out)
@@ -243,6 +369,18 @@ def fill_image_overlay(blob: bytes, schema: list[dict[str, Any]], answers: dict[
                 except Exception:
                     pass
             row_blocks.append((f"{label}: {_signature_fallback_text(raw)}", None))
+            extra_h += 22
+        elif it == "checkbox":
+            row_blocks.append((f"{label}: {_checkbox_merge_replacement(answers.get(key))}", None))
+            extra_h += 22
+        elif it == "radio":
+            rg = str(row.get("radio_group") or "").strip()
+            gk = rg if rg else key
+            sel = str(answers.get(gk, "") or "").strip()
+            opt = str(row.get("radio_option") or key).strip()
+            row_blocks.append(
+                (f"{label}: {_checkbox_merge_replacement(bool(sel) and sel.lower() == opt.lower())}", None)
+            )
             extra_h += 22
         else:
             row_blocks.append((f"{label}: {raw}", None))

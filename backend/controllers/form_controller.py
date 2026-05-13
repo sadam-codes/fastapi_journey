@@ -141,10 +141,15 @@ async def admin_patch_template_field_types(
     body: PatchFieldTypesBody,
     _: dict = Depends(require_roles([User.ROLE_ADMIN])),
 ) -> TemplateDetailResponse:
-    return await form_flow_helper.admin_patch_template_field_types(
-        template_id,
-        updates=[{"key": f.key, "input_type": f.input_type} for f in body.fields],
-    )
+    updates = []
+    for f in body.fields:
+        u: dict = {"key": f.key, "input_type": f.input_type}
+        if f.radio_group is not None:
+            u["radio_group"] = f.radio_group
+        if f.radio_option is not None:
+            u["radio_option"] = f.radio_option
+        updates.append(u)
+    return await form_flow_helper.admin_patch_template_field_types(template_id, updates=updates)
 
 
 @router.put("/admin/templates/{template_id}", response_model=UploadResponse)

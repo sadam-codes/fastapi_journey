@@ -76,7 +76,7 @@ export default function AdminSubmissionDetail() {
   const [previewRev, setPreviewRev] = useState(0)
 
   useEffect(() => {
-    ;(async () => {
+    ; (async () => {
       try {
         setLoadFailed(false)
         const d = await api(`/forms/admin/submissions/${submissionId}`)
@@ -124,32 +124,7 @@ export default function AdminSubmissionDetail() {
           </p>
           <p className="mt-1 text-xs text-slate-500">Template file: {detail.template_original_filename}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {detail.has_filled_file ? (
-            <button
-              type="button"
-              className={btnPrimaryClass}
-              onClick={async () => {
-                try {
-                  await downloadSubmissionFile(detail.id, detail.filled_filename)
-                  toastSuccess('Download started.')
-                } catch (e) {
-                  toastError(e.message || 'Download failed.')
-                }
-              }}
-            >
-              Download filled file
-            </button>
-          ) : null}
-          <Link to={`/admin/templates/${detail.template_id}`} className={btnSecondaryClass}>
-            Open template
-          </Link>
-          <button type="button" className={btnMutedClass} onClick={() => nav(-1)}>
-            Back
-          </button>
-        </div>
       </div>
-
       {detail.has_filled_file && detail.filled_filename ? (
         <GlassCard className="max-w-none overflow-hidden p-0 sm:p-0">
           <div className="flex flex-col gap-3 border-b border-slate-200/80 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -179,70 +154,9 @@ export default function AdminSubmissionDetail() {
         </GlassCard>
       ) : null}
 
-      <GlassCard className="max-w-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Field values</p>
-        <h2 className="mt-1 text-xl font-bold text-slate-900">Structured answers</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Same keys as the user form. Use the merged preview above to see the document exactly as generated.
-        </p>
 
-        {formRows.length === 0 ? (
-          <p className="mt-6 text-sm text-slate-600">No field definitions or answers are stored for this submission.</p>
-        ) : (
-          <div className="mt-6 flex flex-col gap-5">
-            {formRows.map((r) => {
-              const val = r.value ?? ''
-              const isDataUrlImg = typeof val === 'string' && val.startsWith('data:image/')
-              const multiline = !isDataUrlImg && (val.includes('\n') || val.length > 180)
-              const tokenHint = r.placeholders?.length ? r.placeholders.join(' · ') : ''
-              const typeHint = r.input_type && r.input_type !== 'text' ? r.input_type : ''
-              return (
-                <div key={r.reactKey} className="text-sm font-medium text-slate-800">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span>{r.label}</span>
-                    <span className="text-xs font-normal text-slate-400">
-                      Key: {r.fieldKey}
-                      {typeHint ? ` · ${typeHint}` : ''}
-                    </span>
-                  </div>
-                  {tokenHint ? (
-                    <p className="mt-0.5 text-xs font-normal text-slate-500">In document: {tokenHint}</p>
-                  ) : null}
-                  {isDataUrlImg ? (
-                    <div className="mt-2">
-                      <img
-                        src={val}
-                        alt={`${r.label} — signature`}
-                        className="max-h-44 max-w-full rounded-lg border border-slate-200 bg-white object-contain shadow-sm"
-                      />
-                    </div>
-                  ) : multiline ? (
-                    <textarea
-                      readOnly
-                      value={val}
-                      rows={Math.min(14, Math.max(3, val.split('\n').length + 1))}
-                      className={`${userAreaInputClass} mt-1.5 resize-y font-normal`}
-                    />
-                  ) : (
-                    <input
-                      readOnly
-                      value={val}
-                      placeholder="(empty)"
-                      className={`${userAreaInputClass} mt-1.5 font-normal`}
-                    />
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </GlassCard>
 
-      <p className="text-sm">
-        <Link to="/admin/submissions" className="font-semibold text-indigo-600 hover:text-indigo-500">
-          ← All filled forms
-        </Link>
-      </p>
+
     </div>
   )
 }
