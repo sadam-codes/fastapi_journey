@@ -87,7 +87,7 @@ export default function AdminTemplatesList() {
           <p className="text-base font-semibold text-slate-800">No templates yet</p>
           <p className="mx-auto mt-2 max-w-md text-sm text-slate-600">
             Upload a PDF, DOCX, or image from the Upload page. Placeholders in{' '}
-            <code className="rounded bg-white px-1 font-mono text-xs">{'{{field}}'}</code> form become user fields.
+            <code className="rounded bg-white px-1 font-mono text-xs">{'{field}'}</code> form become user fields.
           </p>
           <Link to="/admin/upload" className={`mt-8 inline-flex ${btnSecondaryClass}`}>
             Upload a template
@@ -112,7 +112,7 @@ export default function AdminTemplatesList() {
                 <p className="mt-2 truncate text-sm text-slate-500">{t.original_filename}</p>
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
-                    {t.field_count} field{t.field_count === 1 ? '' : 's'}
+                    {t.field_count} label{t.field_count === 1 ? '' : 's'}
                   </span>
                   <span className="text-xs font-semibold text-indigo-600 group-hover:underline">Open →</span>
                 </div>

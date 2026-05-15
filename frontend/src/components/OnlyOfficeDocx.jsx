@@ -3,7 +3,42 @@ import { getToken } from '../api'
 
 const apiBase = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
+/** OnlyOffice api.js can hang if the document server URL is wrong or unreachable. */
+const SDK_LOAD_TIMEOUT_MS = 75_000
+
 const sdkPromises = new Map()
+
+function withTimeout(promise, ms, onTimeoutMessage) {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => reject(new Error(onTimeoutMessage)), ms)
+    promise.then(
+      (v) => {
+        window.clearTimeout(t)
+        resolve(v)
+      },
+      (e) => {
+        window.clearTimeout(t)
+        reject(e)
+      },
+    )
+  })
+}
+
+function formatOnlyOfficeEventMessage(event) {
+  const d = event?.data
+  if (d == null) return event?.message ? String(event.message) : ''
+  if (typeof d === 'string') return d
+  if (typeof d === 'object') {
+    const parts = [d.warningCode, d.warningDescription, d.message, d.error].filter(Boolean)
+    if (parts.length) return parts.map(String).join(': ')
+    try {
+      return JSON.stringify(d)
+    } catch {
+      return String(d)
+    }
+  }
+  return String(d)
+}
 
 function loadSdkOnce(sdkUrl) {
   if (typeof window !== 'undefined' && window.DocsAPI) {
@@ -87,6 +122,7 @@ export default function OnlyOfficeDocx({
   className = '',
   onReady,
   onError,
+  onBootstrapMeta,
 }) {
   const rid = useId().replace(/:/g, '')
   const containerId = useMemo(() => {
@@ -100,14 +136,18 @@ export default function OnlyOfficeDocx({
   const editorRef = useRef(null)
   const onReadyRef = useRef(onReady)
   const onErrorRef = useRef(onError)
+  const onBootstrapMetaRef = useRef(onBootstrapMeta)
 
   useEffect(() => {
     onReadyRef.current = onReady
     onErrorRef.current = onError
-  }, [onReady, onError])
+    onBootstrapMetaRef.current = onBootstrapMeta
+  }, [onReady, onError, onBootstrapMeta])
 
   const [phase, setPhase] = useState('loading')
   const [hint, setHint] = useState('')
+  /** Backend hint (e.g. PUBLIC_APP_URL localhost vs Docker Document Server). */
+  const [setupHint, setSetupHint] = useState('')
   /** Where time is spent while phase === 'loading' (helps debug stuck opens). */
   const [loadStep, setLoadStep] = useState('config')
 
@@ -136,6 +176,7 @@ export default function OnlyOfficeDocx({
       setPhase('loading')
       setLoadStep('config')
       setHint('')
+      setSetupHint('')
       tearDown()
 
       try {
@@ -163,8 +204,16 @@ export default function OnlyOfficeDocx({
           return
         }
 
+        if (boot.setup_hint) {
+          setSetupHint(String(boot.setup_hint))
+        }
+
         setLoadStep('sdk')
-        await loadSdkOnce(boot.sdkUrl)
+        await withTimeout(
+          loadSdkOnce(boot.sdkUrl),
+          SDK_LOAD_TIMEOUT_MS,
+          'OnlyOffice script did not load in time. Check ONLYOFFICE_DOCUMENT_SERVER_URL, firewall, and that the document server is running.',
+        )
         if (cancelled) return
         if (!window.DocsAPI) {
           throw new Error('OnlyOffice API not available after loading script.')
@@ -178,6 +227,10 @@ export default function OnlyOfficeDocx({
         el.innerHTML = `<div id="${containerId}" class="h-full w-full min-h-0" style="height:100%"></div>`
 
         const cfg = JSON.parse(JSON.stringify(boot.config))
+        onBootstrapMetaRef.current?.({
+          documentKey: cfg?.document?.key ?? null,
+          fileVersion: boot.file_version ?? null,
+        })
         cfg.events = {
           ...(cfg.events && typeof cfg.events === 'object' ? cfg.events : {}),
           onDocumentReady: () => {
@@ -194,6 +247,15 @@ export default function OnlyOfficeDocx({
             stallTimer = 0
             const msg = event?.data || event?.message || 'OnlyOffice error'
             const s = String(msg)
+            setPhase('error')
+            setHint(s)
+            onErrorRef.current?.(s)
+          },
+          onWarning: (event) => {
+            if (cancelled) return
+            const s = formatOnlyOfficeEventMessage(event) || 'OnlyOffice could not open the document (warning).'
+            window.clearTimeout(stallTimer)
+            stallTimer = 0
             setPhase('error')
             setHint(s)
             onErrorRef.current?.(s)
@@ -242,11 +304,16 @@ export default function OnlyOfficeDocx({
             aria-hidden
           />
           <p className="text-sm font-medium text-slate-600">Opening document…</p>
+          {setupHint ? (
+            <p className="max-w-md rounded-lg border border-amber-200 bg-amber-50/95 px-3 py-2 text-left text-xs leading-relaxed text-amber-950">
+              {setupHint}
+            </p>
+          ) : null}
           <p className="max-w-sm px-4 text-center text-xs leading-relaxed text-slate-500">
             {loadStep === 'config' && 'Getting editor settings from your API.'}
             {loadStep === 'sdk' && 'Loading OnlyOffice from the Document Server (can take a while the first time).'}
             {loadStep === 'document' &&
-              'loading...'}
+              'Opening the file'}
           </p>
         </div>
       )}

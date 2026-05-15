@@ -10,7 +10,10 @@ class TemplateListItem(BaseModel):
     id: int
     title: str
     original_filename: str
-    field_count: int
+    field_count: int = Field(
+        ...,
+        description="Number of Generated-fields cards (radio Yes/No counts once, not per option).",
+    )
     created_at: datetime
 
 
@@ -20,6 +23,8 @@ class TemplateDetailResponse(BaseModel):
     original_filename: str
     fields_schema: list[dict[str, Any]]
     created_at: datetime
+    file_version: int = 0
+    oo_key_nonce: int = 0
 
 
 class UploadResponse(BaseModel):
@@ -29,6 +34,8 @@ class UploadResponse(BaseModel):
     fields_schema: list[dict[str, Any]]
     char_count: int
     message: str
+    file_version: int = 0
+    oo_key_nonce: int = 0
 
 
 class FieldTypeUpdateItem(BaseModel):
@@ -36,6 +43,8 @@ class FieldTypeUpdateItem(BaseModel):
     input_type: str = Field(..., min_length=1, max_length=32)
     radio_group: Optional[str] = Field(default=None, max_length=128)
     radio_option: Optional[str] = Field(default=None, max_length=256)
+    checkbox_group: Optional[str] = Field(default=None, max_length=128)
+    checkbox_option: Optional[str] = Field(default=None, max_length=256)
 
 
 class PatchFieldTypesBody(BaseModel):
@@ -50,6 +59,21 @@ class OnlyOfficeBootstrapResponse(BaseModel):
     sdkUrl: str | None = None
     config: dict[str, Any] | None = None
     token: str | None = None
+    file_version: int | None = Field(default=None, description="Template blob revision; bumps after each OnlyOffice save.")
+    document_key: str | None = Field(
+        default=None,
+        description="Same as config.document.key; send back with forcesave so the command targets the open session.",
+    )
+    setup_hint: str | None = Field(
+        default=None,
+        description="Non-fatal connectivity note (e.g. localhost PUBLIC_APP_URL vs Docker Document Server).",
+    )
+
+
+class OnlyOfficeForcesaveBody(BaseModel):
+    """Optional body so forcesave targets the editor session key (avoids mismatch after autosave bumps file_version)."""
+
+    document_key: str | None = Field(default=None, max_length=130)
 
 
 class SubmitBody(BaseModel):

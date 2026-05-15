@@ -7,7 +7,6 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from typing import Any
 from urllib.parse import quote
 
@@ -15,10 +14,15 @@ import httpx
 import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
-from helpers.auth_helper import JWT_ALGORITHM, JWT_SECRET
-from helpers.form_field_detect import detect_dynamic_fields, merge_detected_with_saved_input_types, normalize_field_schema
+from helpers.auth_helper import JWT_ALGORITHM, JWT_SECRET, JWT_SIGNING_KEY
+from helpers.form_field_detect import (
+    count_field_schema_display_groups,
+    detect_dynamic_fields,
+    merge_detected_with_saved_input_types,
+    normalize_field_schema,
+)
 from helpers.form_text_extract import extract_plain_text_from_upload
 from models.form_flow import FormSubmission, FormTemplate
 from models.user import User
@@ -39,6 +43,26 @@ else:
     ONLYOFFICE_ENABLE_JWT = bool(ONLYOFFICE_JWT_SECRET)
 MAX_UPLOAD_BYTES = int(os.getenv("FORM_MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 ONLYOFFICE_CALLBACK_POLL_SECONDS = float(os.getenv("ONLYOFFICE_CALLBACK_POLL_SECONDS", "35"))
+# How often we re-read the DB while waiting for the callback after a forcesave command (smaller = snappier UI).
+ONLYOFFICE_FORCESAVE_POLL_INTERVAL_S = float(os.getenv("ONLYOFFICE_FORCESAVE_POLL_INTERVAL_S", "0.05"))
+
+_oo_command_client: httpx.AsyncClient | None = None
+# Remember which Document Server command endpoint works (avoids a wasted round-trip on every save).
+_oo_command_url_base: str | None = None
+
+
+def _onlyoffice_setup_hint() -> str | None:
+    """If Document Server runs in Docker, it cannot reach the host API at localhost/127.0.0.1."""
+    p = (PUBLIC_APP_URL or "").strip().lower()
+    if not p:
+        return None
+    if "127.0.0.1" in p or "localhost" in p:
+        return (
+            "PUBLIC_APP_URL uses localhost. If OnlyOffice runs in Docker, the server cannot download your "
+            "document from localhost. Set PUBLIC_APP_URL to http://host.docker.internal:8000 (Windows/Mac) "
+            "or your machine's LAN IP so the Document Server can reach this API."
+        )
+    return None
 
 
 def _jwt_str(token: Any) -> str:
@@ -51,14 +75,42 @@ def onlyoffice_enabled() -> bool:
     return bool(ONLYOFFICE_DOCUMENT_SERVER_URL)
 
 
+def _oo_command_http() -> httpx.AsyncClient:
+    """Reuse one client for Command Service calls (avoids TLS + TCP setup on every Save click)."""
+    global _oo_command_client
+    if _oo_command_client is None or getattr(_oo_command_client, "is_closed", False):
+        _oo_command_client = httpx.AsyncClient(timeout=45.0, follow_redirects=True)
+    return _oo_command_client
+
+
+async def close_onlyoffice_http_clients() -> None:
+    global _oo_command_client
+    c = _oo_command_client
+    _oo_command_client = None
+    if c is not None and not getattr(c, "is_closed", False):
+        await c.aclose()
+
+
+def _command_service_urls() -> tuple[str, ...]:
+    base = ONLYOFFICE_DOCUMENT_SERVER_URL
+    primary = f"{base}/coauthoring/CommandService.ashx"
+    secondary = f"{base}/command"
+    global _oo_command_url_base
+    if _oo_command_url_base == primary:
+        return (primary, secondary)
+    if _oo_command_url_base == secondary:
+        return (secondary, primary)
+    return (primary, secondary)
+
+
 def onlyoffice_jwt_signing_enabled() -> bool:
     """True when editor bootstrap will include a JWT for the Document Server."""
     return bool(ONLYOFFICE_ENABLE_JWT and ONLYOFFICE_JWT_SECRET)
 
 
-def _edit_document_key(template_id: int, nonce: int) -> str:
-    """Stable per template while editing; bump oo_key_nonce only when replacing the file via admin upload."""
-    return f"tmpl-{template_id}-e{int(nonce)}"[:120]
+def _edit_document_key(template_id: int, nonce: int, file_version: int) -> str:
+    """Bumps with ``file_version`` after each successful save so OnlyOffice reload fetches new bytes."""
+    return f"tmpl-{template_id}-e{int(nonce)}-{int(file_version)}"[:120]
 
 
 def _view_document_key(template_id: int, cache_bust: int) -> str:
@@ -73,7 +125,7 @@ def _sign_editor_payload(payload: dict[str, Any]) -> str | None:
 
 
 def _create_download_jwt(*, template_id: int, user: dict) -> str:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="JWT_SECRET is required for OnlyOffice document URLs.",
@@ -81,24 +133,24 @@ def _create_download_jwt(*, template_id: int, user: dict) -> str:
     exp = datetime.now(timezone.utc) + timedelta(minutes=30)
     return _jwt_str(
         jwt.encode(
-        {
-            "scope": "onlyoffice_dl",
-            "tid": template_id,
-            "sub": str(user.get("sub", "")),
-            "role": str(user.get("role", "")),
-            "exp": exp,
-        },
-        str(JWT_SECRET),
-        algorithm=JWT_ALGORITHM,
+            {
+                "scope": "onlyoffice_dl",
+                "tid": template_id,
+                "sub": str(user.get("sub", "")),
+                "role": str(user.get("role", "")),
+                "exp": exp,
+            },
+            JWT_SIGNING_KEY,
+            algorithm=JWT_ALGORITHM,
         )
     )
 
 
 def _verify_download_jwt(token: str) -> dict[str, Any]:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise HTTPException(status_code=500, detail="Server misconfigured.")
     try:
-        payload = jwt.decode(token, str(JWT_SECRET), algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SIGNING_KEY, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -118,7 +170,7 @@ OO_SUB_FILLED_SCOPE = "onlyoffice_sub_filled"
 
 
 def _create_submission_filled_download_jwt(*, submission_id: int, user: dict) -> str:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="JWT_SECRET is required for submission document URLs.",
@@ -135,17 +187,17 @@ def _create_submission_filled_download_jwt(*, submission_id: int, user: dict) ->
                 "role": str(user.get("role", "")),
                 "exp": exp,
             },
-            str(JWT_SECRET),
+            JWT_SIGNING_KEY,
             algorithm=JWT_ALGORITHM,
         )
     )
 
 
 def _verify_submission_filled_download_jwt(token: str) -> dict[str, Any]:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise HTTPException(status_code=500, detail="Server misconfigured.")
     try:
-        payload = jwt.decode(token, str(JWT_SECRET), algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SIGNING_KEY, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -216,6 +268,7 @@ async def onlyoffice_bootstrap(
             "sdkUrl": None,
             "config": None,
             "token": None,
+            "setup_hint": None,
         }
 
     role = user.get("role")
@@ -236,16 +289,18 @@ async def onlyoffice_bootstrap(
             "sdkUrl": None,
             "config": None,
             "token": None,
+            "setup_hint": None,
         }
 
     nonce = int(getattr(t, "oo_key_nonce", None) or 0)
+    fv = int(getattr(t, "file_version", None) or 0)
     if mode == "edit":
-        doc_key = _edit_document_key(t.id, nonce)
+        doc_key = _edit_document_key(t.id, nonce, fv)
     else:
         doc_key = _view_document_key(t.id, int(view_cache_bust) or 0)
     dl_jwt = _create_download_jwt(template_id=t.id, user=user)
     document_url = (
-        f"{PUBLIC_APP_URL}/forms/internal/onlyoffice/document?token={quote(dl_jwt, safe='')}"
+        f"{PUBLIC_APP_URL}/forms/internal/onlyoffice/document?token={quote(dl_jwt, safe='')}&fv={fv}"
     )
     callback_url = f"{PUBLIC_APP_URL}/forms/internal/onlyoffice/callback"
 
@@ -319,6 +374,9 @@ async def onlyoffice_bootstrap(
         "sdkUrl": f"{ONLYOFFICE_DOCUMENT_SERVER_URL}/web-apps/apps/api/documents/api.js",
         "config": payload,
         "token": token,
+        "file_version": fv,
+        "document_key": doc_key,
+        "setup_hint": _onlyoffice_setup_hint(),
     }
 
 
@@ -344,6 +402,7 @@ async def onlyoffice_submission_filled_bootstrap(
             "sdkUrl": None,
             "config": None,
             "token": None,
+            "setup_hint": None,
         }
     if user.get("role") != User.ROLE_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only.")
@@ -358,6 +417,7 @@ async def onlyoffice_submission_filled_bootstrap(
             "sdkUrl": None,
             "config": None,
             "token": None,
+            "setup_hint": None,
         }
     fn = (sub.filled_filename or "").lower()
     if not fn.endswith(".docx"):
@@ -367,6 +427,7 @@ async def onlyoffice_submission_filled_bootstrap(
             "sdkUrl": None,
             "config": None,
             "token": None,
+            "setup_hint": None,
         }
 
     tpl = sub.template
@@ -428,10 +489,13 @@ async def onlyoffice_submission_filled_bootstrap(
         "sdkUrl": f"{ONLYOFFICE_DOCUMENT_SERVER_URL}/web-apps/apps/api/documents/api.js",
         "config": payload,
         "token": token,
+        "file_version": None,
+        "document_key": None,
+        "setup_hint": _onlyoffice_setup_hint(),
     }
 
 
-async def onlyoffice_forcesave(*, template_id: int) -> dict[str, Any]:
+async def onlyoffice_forcesave(*, template_id: int, document_key: str | None = None) -> dict[str, Any]:
     """Ask Document Server to save the open editing session to callbackUrl (forcesave command)."""
     if not onlyoffice_enabled():
         raise HTTPException(
@@ -449,8 +513,14 @@ async def onlyoffice_forcesave(*, template_id: int) -> dict[str, Any]:
         )
 
     nonce = int(getattr(t, "oo_key_nonce", None) or 0)
-    doc_key = _edit_document_key(t.id, nonce)
-    v_before = int(getattr(t, "file_version", None) or 0)
+    fv = int(getattr(t, "file_version", None) or 0)
+    dk = (document_key or "").strip()[:120] if document_key else ""
+    if dk:
+        tid = _parse_template_id_from_oo_key(dk)
+        if tid != template_id or not dk.startswith(f"tmpl-{template_id}-"):
+            dk = ""
+    doc_key = dk if dk else _edit_document_key(t.id, nonce, fv)
+    v_before = fv
     cmd_payload: dict[str, Any] = {"c": "forcesave", "key": doc_key}
     if ONLYOFFICE_ENABLE_JWT and ONLYOFFICE_JWT_SECRET:
         body: dict[str, Any] = {
@@ -461,88 +531,88 @@ async def onlyoffice_forcesave(*, template_id: int) -> dict[str, Any]:
     else:
         body = cmd_payload
 
-    command_urls = (
-        f"{ONLYOFFICE_DOCUMENT_SERVER_URL}/command",
-        f"{ONLYOFFICE_DOCUMENT_SERVER_URL}/coauthoring/CommandService.ashx",
-    )
+    command_urls = _command_service_urls()
     last_detail = "Could not reach OnlyOffice command service."
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        for cmd_url in command_urls:
-            try:
-                url = f"{cmd_url}?shardkey={quote(doc_key, safe='')}"
-                r = await client.post(url, json=body)
-            except httpx.RequestError as exc:
-                last_detail = str(exc) or last_detail
-                continue
-            if r.status_code == 404:
-                continue
-            try:
-                data = r.json() if r.content else {}
-            except Exception:
-                last_detail = r.text[:300] if r.text else "Invalid JSON from command service."
-                continue
-            err = data.get("error", -1)
-            if err == 0:
-                poll_slice = 0.2
-                max_poll = max(1, int(ONLYOFFICE_CALLBACK_POLL_SECONDS / poll_slice))
-                for _ in range(max_poll):
-                    t2 = await FormTemplate.get_or_none(id=template_id)
-                    if t2 and int(getattr(t2, "file_version", None) or 0) > v_before:
-                        n_fields = len(t2.fields_schema or [])
-                        return {
-                            "success": True,
-                            "unchanged": False,
-                            "file_version": t2.file_version,
-                            "field_count": n_fields,
-                            "message": (
-                                f"Saved on the server ({n_fields} field{'s' if n_fields != 1 else ''} from {{…}} markers). "
-                                "Open Preview and tap Reload to refresh the viewer."
-                            ),
-                        }
-                    await asyncio.sleep(poll_slice)
-                t3 = await FormTemplate.get_or_none(id=template_id)
-                n_fields = len(t3.fields_schema or []) if t3 else 0
-                return {
-                    "success": True,
-                    "unchanged": False,
-                    "timed_out": True,
-                    "file_version": int(getattr(t3, "file_version", None) or 0) if t3 else v_before,
-                    "field_count": n_fields,
-                    "message": (
-                        "OnlyOffice accepted the save, but the API did not see the storage callback in time "
-                        f"({ONLYOFFICE_CALLBACK_POLL_SECONDS:.0f}s). Wait a few seconds, then Preview → Reload. "
-                        "If this keeps happening: (1) run uvicorn with --host 0.0.0.0 so Docker can reach port 8000, "
-                        "(2) set PUBLIC_APP_URL to a URL the document server container can open "
-                        "(e.g. http://host.docker.internal:8000 on Docker Desktop), "
-                        "(3) on Linux add extra_hosts host.docker.internal:host-gateway to the documentserver service, "
-                        "(4) match ONLYOFFICE_JWT_SECRET with the document server's JWT_SECRET."
-                    ),
-                }
-            if err == 4:
-                t4 = await FormTemplate.get_or_none(id=template_id)
-                n_fields = len(t4.fields_schema or []) if t4 else 0
-                return {
-                    "success": True,
-                    "unchanged": True,
-                    "file_version": int(getattr(t4, "file_version", None) or 0) if t4 else v_before,
-                    "field_count": n_fields,
-                    "message": "No new changes to save since the last version on the server.",
-                }
-            messages: dict[int, str] = {
-                1: "No active edit session for this document — wait until the editor finishes loading, then try again.",
-                2: "OnlyOffice rejected the callback URL configuration.",
-                3: "OnlyOffice internal error while saving.",
-                6: "Invalid command JWT — check ONLYOFFICE_JWT_SECRET matches the document server.",
+    client = _oo_command_http()
+    global _oo_command_url_base
+    for cmd_url in command_urls:
+        try:
+            url = f"{cmd_url}?shardkey={quote(doc_key, safe='')}"
+            r = await client.post(url, json=body)
+        except httpx.RequestError as exc:
+            last_detail = str(exc) or last_detail
+            continue
+        if r.status_code == 404:
+            continue
+        try:
+            data = r.json() if r.content else {}
+        except Exception:
+            last_detail = r.text[:300] if r.text else "Invalid JSON from command service."
+            continue
+        err = data.get("error", -1)
+        if err == 0:
+            _oo_command_url_base = cmd_url
+            poll_slice = max(0.02, ONLYOFFICE_FORCESAVE_POLL_INTERVAL_S)
+            max_poll = max(1, int(ONLYOFFICE_CALLBACK_POLL_SECONDS / poll_slice))
+            for _ in range(max_poll):
+                t2 = await FormTemplate.get_or_none(id=template_id)
+                if t2 and int(getattr(t2, "file_version", None) or 0) > v_before:
+                    n_labels = count_field_schema_display_groups(list(t2.fields_schema or []))
+                    return {
+                        "success": True,
+                        "unchanged": False,
+                        "file_version": t2.file_version,
+                        "field_count": n_labels,
+                        "message": (
+                            f"Saved on the server ({n_labels} label{'s' if n_labels != 1 else ''} in Generated fields). "
+                            "Open Preview and tap Reload to refresh the viewer."
+                        ),
+                    }
+                await asyncio.sleep(poll_slice)
+            t3 = await FormTemplate.get_or_none(id=template_id)
+            n_labels = count_field_schema_display_groups(list(t3.fields_schema or [])) if t3 else 0
+            return {
+                "success": True,
+                "unchanged": False,
+                "timed_out": True,
+                "file_version": int(getattr(t3, "file_version", None) or 0) if t3 else v_before,
+                "field_count": n_labels,
+                "message": (
+                    "OnlyOffice accepted the save, but the API did not see the storage callback in time "
+                    f"({ONLYOFFICE_CALLBACK_POLL_SECONDS:.0f}s). Wait a few seconds, then Preview → Reload. "
+                    "If this keeps happening: (1) run uvicorn with --host 0.0.0.0 so Docker can reach port 8000, "
+                    "(2) set PUBLIC_APP_URL to a URL the document server container can open "
+                    "(e.g. http://host.docker.internal:8000 on Docker Desktop), "
+                    "(3) on Linux add extra_hosts host.docker.internal:host-gateway to the documentserver service, "
+                    "(4) match ONLYOFFICE_JWT_SECRET with the document server's JWT_SECRET."
+                ),
             }
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=messages.get(err, f"OnlyOffice save command failed (error {err})."),
-            )
+        if err == 4:
+            _oo_command_url_base = cmd_url
+            t4 = await FormTemplate.get_or_none(id=template_id)
+            n_labels = count_field_schema_display_groups(list(t4.fields_schema or [])) if t4 else 0
+            return {
+                "success": True,
+                "unchanged": True,
+                "file_version": int(getattr(t4, "file_version", None) or 0) if t4 else v_before,
+                "field_count": n_labels,
+                "message": "No new changes to save since the last version on the server.",
+            }
+        messages: dict[int, str] = {
+            1: "No active edit session for this document — wait until the editor finishes loading, then try again.",
+            2: "OnlyOffice rejected the callback URL configuration.",
+            3: "OnlyOffice internal error while saving.",
+            6: "Invalid command JWT — check ONLYOFFICE_JWT_SECRET matches the document server.",
+        }
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=messages.get(err, f"OnlyOffice save command failed (error {err})."),
+        )
 
     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=last_detail)
 
 
-async def onlyoffice_serve_document(token: str) -> StreamingResponse:
+async def onlyoffice_serve_document(token: str) -> Response:
     payload = _verify_download_jwt(token)
     tid = int(payload["tid"])
     t = await FormTemplate.get_or_none(id=tid)
@@ -556,8 +626,8 @@ async def onlyoffice_serve_document(token: str) -> StreamingResponse:
     guessed = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     safe = (t.original_filename or "document.docx").replace("\r", " ").replace("\n", " ").replace('"', "'")[:200]
 
-    return StreamingResponse(
-        BytesIO(raw),
+    return Response(
+        content=raw,
         media_type=guessed,
         headers={
             "Content-Disposition": f'inline; filename="{safe}"',
@@ -566,7 +636,7 @@ async def onlyoffice_serve_document(token: str) -> StreamingResponse:
     )
 
 
-async def onlyoffice_serve_submission_filled_document(token: str) -> StreamingResponse:
+async def onlyoffice_serve_submission_filled_document(token: str) -> Response:
     """Serve merged submission bytes to OnlyOffice (JWT from admin bootstrap)."""
     payload = _verify_submission_filled_download_jwt(token)
     sid = int(payload["sid"])
@@ -583,8 +653,8 @@ async def onlyoffice_serve_submission_filled_document(token: str) -> StreamingRe
     guessed = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     safe = (sub.filled_filename or "filled.docx").replace("\r", " ").replace("\n", " ").replace('"', "'")[:200]
 
-    return StreamingResponse(
-        BytesIO(raw),
+    return Response(
+        content=raw,
         media_type=guessed,
         headers={
             "Content-Disposition": f'inline; filename="{safe}"',

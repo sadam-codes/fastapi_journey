@@ -42,6 +42,12 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    try:
+        from helpers import onlyoffice_helper
+
+        await onlyoffice_helper.close_onlyoffice_http_clients()
+    except Exception:
+        pass
     await close_db()
 
 

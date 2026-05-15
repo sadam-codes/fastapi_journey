@@ -1,5 +1,6 @@
 import base64
 import io
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -54,6 +55,34 @@ def _checkbox_merge_replacement(raw: Any) -> str:
     return "\u2611" if checked else "\u2610"
 
 
+# After merge, templates often still have literal ``(Yes)`` / ``(No)`` next to ``[[…]]`` → ``☑(Yes)``. Strip those parens.
+_BALLOT_PAREN_LABEL_RX = re.compile(r"([\u2610\u2611])\s*\(([^)]{0,200})\)")
+
+
+def _strip_parentheses_after_ballots(chunk: str) -> str:
+    """``☑(Yes)`` → ``☑ Yes``; ``☐ (No)`` → ``☐ No``."""
+    if not chunk:
+        return chunk
+    return _BALLOT_PAREN_LABEL_RX.sub(lambda m: f"{m.group(1)} {m.group(2).strip()}", chunk)
+
+
+def _coalesce_string_segments_for_ballot_cleanup(segments: list[str | bytes]) -> list[str | bytes]:
+    """Join adjacent string segments so ``☑`` + ``(Yes)`` can be cleaned; keep image bytes as boundaries."""
+    out: list[str | bytes] = []
+    buf: list[str] = []
+    for seg in segments:
+        if isinstance(seg, bytes):
+            if buf:
+                out.append(_strip_parentheses_after_ballots("".join(buf)))
+                buf = []
+            out.append(seg)
+        else:
+            buf.append(seg)
+    if buf:
+        out.append(_strip_parentheses_after_ballots("".join(buf)))
+    return out
+
+
 def _paragraph_plain_preserving_tabs(paragraph: Any) -> str:
     """Paragraph text including Word tab stops (``<w:tab/>``), not only ``run.text``.
 
@@ -89,6 +118,69 @@ def _spec_placeholders_match_index(row: dict[str, Any]) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+# Strip explicit radio / checkbox scaffolding (not in schema placeholders).
+_RADIO_MARKUP_START_RX = re.compile(r"\[\[\s*RADIO_START\s*:([\s\S]*?)\]\]", re.IGNORECASE)
+_RADIO_MARKUP_END_RX = re.compile(r"\[\[\s*RADIO_END\s*(?:\]\]|\])", re.IGNORECASE)
+_CHECKBOX_MARKUP_START_RX = re.compile(r"\[\[\s*CHECKBOX_START\s*:([\s\S]*?)\]\]", re.IGNORECASE)
+_CHECKBOX_MARKUP_END_RX = re.compile(r"\[\[\s*CHECKBOX_END\s*(?:\]\]|\])", re.IGNORECASE)
+
+
+def _explicit_radio_markup_strip_specs(full: str) -> list[tuple[str, str | bytes, int | None]]:
+    """Literal substrings to remove ``[[RADIO_*]]`` / ``[[CHECKBOX_*]]`` markers from this paragraph."""
+    seen: set[str] = set()
+    out: list[tuple[str, str | bytes, int | None]] = []
+    for rx in (
+        _RADIO_MARKUP_START_RX,
+        _RADIO_MARKUP_END_RX,
+        _CHECKBOX_MARKUP_START_RX,
+        _CHECKBOX_MARKUP_END_RX,
+    ):
+        for m in rx.finditer(full or ""):
+            s = m.group(0)
+            if s not in seen:
+                seen.add(s)
+                out.append((s, "", None))
+    out.sort(key=lambda x: -len(x[0]))
+    return out
+
+
+def _explicit_radio_markup_strip_specs_from_pdf(doc: Any) -> list[tuple[str, str | bytes, int | None]]:
+    """Collect unique explicit radio/checkbox markup literals across all pages."""
+    seen: set[str] = set()
+    out: list[tuple[str, str | bytes, int | None]] = []
+    for page in doc:
+        t = page.get_text() or ""
+        for rx in (
+            _RADIO_MARKUP_START_RX,
+            _RADIO_MARKUP_END_RX,
+            _CHECKBOX_MARKUP_START_RX,
+            _CHECKBOX_MARKUP_END_RX,
+        ):
+            for m in rx.finditer(t):
+                s = m.group(0)
+                if s not in seen:
+                    seen.add(s)
+                    out.append((s, "", None))
+    out.sort(key=lambda x: -len(x[0]))
+    return out
+
+
+def _radio_group_label_bracket_strip_specs(schema: list[dict[str, Any]]) -> list[tuple[str, str, int | None]]:
+    """Replace ``[Caption]`` with ``Caption`` when it matches a radio row's ``group_label`` (clean merged .docx)."""
+    seen: set[str] = set()
+    out: list[tuple[str, str, int | None]] = []
+    for row in schema or []:
+        it = str(row.get("input_type") or "").lower()
+        if it not in ("radio", "checkbox"):
+            continue
+        gl = str(row.get("group_label") or "").strip()
+        if not gl or gl in seen:
+            continue
+        seen.add(gl)
+        out.append((f"[{gl}]", gl, None))
+    return out
 
 
 def _placeholder_specs(
@@ -191,7 +283,7 @@ def _rebuild_docx_paragraph(
             detail="DOCX support is not available.",
         ) from exc
 
-    segments = _full_string_to_segments(full, specs, occ_state)
+    segments = _coalesce_string_segments_for_ballot_cleanup(_full_string_to_segments(full, specs, occ_state))
     p_el = paragraph._element
     for child in list(p_el):
         if child.tag != qn("w:pPr"):
@@ -235,10 +327,14 @@ def fill_docx(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any]
         ) from exc
 
     doc = Document(io.BytesIO(blob))
-    specs = _placeholder_specs(schema, answers)
+    strip_specs = _radio_group_label_bracket_strip_specs(schema)
+    main_specs = _placeholder_specs(schema, answers)
+    base_specs = sorted(strip_specs + main_specs, key=lambda x: -len(x[0]))
     occ_state: defaultdict[str, int] = defaultdict(int)
     for p in _iter_docx_paragraphs(doc):
         full = _paragraph_plain_preserving_tabs(p)
+        radio_strip = _explicit_radio_markup_strip_specs(full)
+        specs = sorted(radio_strip + base_specs, key=lambda x: -len(x[0]))
         if not full or not any(ph in full for ph, _, __ in specs):
             continue
         _rebuild_docx_paragraph(p, full, specs, occ_state)
@@ -284,9 +380,11 @@ def fill_pdf(blob: bytes, schema: list[dict[str, Any]], answers: dict[str, Any])
 
     doc = fitz.open(stream=blob, filetype="pdf")
     specs = _placeholder_specs(schema, answers)
+    strip_specs = _radio_group_label_bracket_strip_specs(schema)
+    pdf_radio_strip = _explicit_radio_markup_strip_specs_from_pdf(doc)
 
     image_specs = [s for s in specs if isinstance(s[1], bytes)]
-    text_specs = [s for s in specs if isinstance(s[1], str)]
+    text_specs = strip_specs + pdf_radio_strip + [s for s in specs if isinstance(s[1], str)]
 
     for ph, img_bytes, midx in image_specs:
         if midx is None:

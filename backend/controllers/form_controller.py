@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from helpers import onlyoffice_helper
@@ -12,6 +12,7 @@ from schemas.form_schemas import (
     AdminSubmissionDetailResponse,
     AdminSubmissionListItem,
     OnlyOfficeBootstrapResponse,
+    OnlyOfficeForcesaveBody,
     PatchFieldTypesBody,
     SubmitBody,
     SubmitResponse,
@@ -122,9 +123,13 @@ async def admin_onlyoffice_bootstrap(
 @router.post("/admin/templates/{template_id}/onlyoffice/forcesave")
 async def admin_onlyoffice_forcesave(
     template_id: int,
+    body: OnlyOfficeForcesaveBody | None = Body(default=None),
     _: dict = Depends(require_roles([User.ROLE_ADMIN])),
 ) -> dict[str, Any]:
-    return await onlyoffice_helper.onlyoffice_forcesave(template_id=template_id)
+    return await onlyoffice_helper.onlyoffice_forcesave(
+        template_id=template_id,
+        document_key=(body.document_key if body else None),
+    )
 
 
 @router.get("/admin/templates/{template_id}", response_model=TemplateDetailResponse)
@@ -148,6 +153,10 @@ async def admin_patch_template_field_types(
             u["radio_group"] = f.radio_group
         if f.radio_option is not None:
             u["radio_option"] = f.radio_option
+        if f.checkbox_group is not None:
+            u["checkbox_group"] = f.checkbox_group
+        if f.checkbox_option is not None:
+            u["checkbox_option"] = f.checkbox_option
         updates.append(u)
     return await form_flow_helper.admin_patch_template_field_types(template_id, updates=updates)
 

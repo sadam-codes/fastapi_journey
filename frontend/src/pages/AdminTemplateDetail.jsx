@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import { api, downloadAdminTemplate, patchAdminTemplateFieldTypes, updateAdminTemplate } from '../api'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -80,11 +80,105 @@ const FIELD_TYPE_OPTIONS = [
   { value: 'signature', label: 'Signature' },
 ]
 
-/** Shared HTML `name` for radios: form section from the doc (`group_label`), else the field key. */
+/** Shared HTML ``name`` for radios: form section from the doc (`group_label`), else the field key. */
 function inferredRadioGroup(row) {
+  const rg = row.radio_group != null && String(row.radio_group).trim()
+  if (rg) return String(row.radio_group).trim().slice(0, 128)
   const gl = row.group_label != null ? String(row.group_label).trim() : ''
   if (gl) return gl.slice(0, 128)
   return String(row.key || '').trim().slice(0, 128)
+}
+
+/** Value stored for merge / submit (e.g. ``a``), not the storage key (e.g. ``r0_a``). */
+function effectiveRadioOption(row) {
+  const ro = row.radio_option != null && String(row.radio_option).trim()
+  if (ro) return String(row.radio_option).trim().slice(0, 256)
+  const k = String(row.key || '')
+  const m = /^r\d+_(.+)$/.exec(k)
+  if (m) return m[1].trim().slice(0, 256)
+  return k.trim().slice(0, 256)
+}
+
+/** Shared grouping id for explicit multi-checkbox blocks (``checkbox_group`` from template). */
+function inferredCheckboxGroup(row) {
+  const cg = row.checkbox_group != null && String(row.checkbox_group).trim()
+  if (cg) return String(row.checkbox_group).trim().slice(0, 128)
+  const gl = row.group_label != null ? String(row.group_label).trim() : ''
+  if (gl) return gl.slice(0, 128)
+  return String(row.key || '').trim().slice(0, 128)
+}
+
+/** One UI card per radio group (same ``radio_group`` / inferred group), not one card per option. */
+function clusterFieldRowsForAdmin(rows) {
+  const list = Array.isArray(rows) ? rows : []
+  const out = []
+  let i = 0
+  while (i < list.length) {
+    const r = list[i]
+    const it = (r.input_type || 'text').toLowerCase()
+    if (it === 'radio') {
+      const rg = inferredRadioGroup(r)
+      const opts = [{ rowIndex: i, row: r }]
+      let j = i + 1
+      while (j < list.length) {
+        const r2 = list[j]
+        if ((r2.input_type || 'text').toLowerCase() !== 'radio') break
+        if (inferredRadioGroup(r2) !== rg) break
+        opts.push({ rowIndex: j, row: r2 })
+        j += 1
+      }
+      if (opts.length >= 2) {
+        out.push({ kind: 'radio_group', options: opts })
+      } else {
+        out.push({ kind: 'single', rowIndex: i, row: r })
+      }
+      i = j
+      continue
+    }
+    if (it === 'checkbox' && r.checkbox_group != null && String(r.checkbox_group).trim()) {
+      const cg = inferredCheckboxGroup(r)
+      const opts = [{ rowIndex: i, row: r }]
+      let j = i + 1
+      while (j < list.length) {
+        const r2 = list[j]
+        if ((r2.input_type || 'text').toLowerCase() !== 'checkbox') break
+        if (!r2.checkbox_group || !String(r2.checkbox_group).trim()) break
+        if (inferredCheckboxGroup(r2) !== cg) break
+        opts.push({ rowIndex: j, row: r2 })
+        j += 1
+      }
+      if (opts.length >= 2) {
+        out.push({ kind: 'checkbox_group', options: opts })
+      } else {
+        out.push({ kind: 'single', rowIndex: i, row: r })
+      }
+      i = j
+      continue
+    }
+    out.push({ kind: 'single', rowIndex: i, row: r })
+    i += 1
+  }
+  return out
+}
+
+/** Same cardinality as backend ``count_field_schema_display_groups`` (radio group = 1). */
+function countFieldLabelsFromSchema(fieldsSchema) {
+  const rows = Array.isArray(fieldsSchema)
+    ? fieldsSchema.map((f) => ({ ...f, input_type: f.input_type || 'text' }))
+    : []
+  return clusterFieldRowsForAdmin(rows).length
+}
+
+/** Prefer ``group_label`` from any sibling row; else option labels; avoid generic placeholder copy. */
+function radioClusterHeadingFromOptions(options) {
+  const rows = options.map((o) => o.row)
+  const gl = rows.map((r) => r.group_label).find((x) => x != null && String(x).trim())
+  if (gl != null && String(gl).trim()) return String(gl).trim()
+  const partLabels = rows
+    .map((r) => (r.label != null && String(r.label).trim()) || '')
+    .filter(Boolean)
+  if (partLabels.length) return partLabels.join(' · ').slice(0, 200)
+  return 'Options'
 }
 
 export function AdminTemplateFieldsTab() {
@@ -102,6 +196,8 @@ export function AdminTemplateFieldsTab() {
     setRows(fs.map((f) => ({ ...f, input_type: f.input_type || 'text' })))
   }, [detail])
 
+  const rowClusters = useMemo(() => clusterFieldRowsForAdmin(rows), [rows])
+
   async function onSave() {
     if (!template) return
     setBusy(true)
@@ -111,7 +207,12 @@ export function AdminTemplateFieldsTab() {
         const base = { key: r.key, input_type: it }
         if (it === 'radio') {
           base.radio_group = inferredRadioGroup(r)
-          base.radio_option = String(r.key || '').trim().slice(0, 256)
+          base.radio_option = effectiveRadioOption(r)
+        } else if (it === 'checkbox' && r.checkbox_group != null && String(r.checkbox_group).trim()) {
+          base.checkbox_group = String(r.checkbox_group).trim().slice(0, 128)
+          if (r.checkbox_option != null && String(r.checkbox_option).trim()) {
+            base.checkbox_option = String(r.checkbox_option).trim().slice(0, 256)
+          }
         }
         return base
       })
@@ -125,7 +226,7 @@ export function AdminTemplateFieldsTab() {
     }
   }
 
-  /** Flow: {{a}}{{b}}… in doc → upload → rows here → all Checkbox → user ticks → merge ☑/☐. */
+  /** Flow: {a}{b}… in doc → upload → rows here → all Checkbox → user ticks → merge ☑/☐. */
   async function onSaveAllCheckboxes() {
     if (!template || !rows.length) return
     const ok = await confirm({
@@ -147,8 +248,18 @@ export function AdminTemplateFieldsTab() {
             key: r.key,
             input_type: 'radio',
             radio_group: inferredRadioGroup(r),
-            radio_option: String(r.key || '').trim().slice(0, 256),
+            radio_option: effectiveRadioOption(r),
           }
+        }
+        if (it === 'checkbox') {
+          const o = { key: r.key, input_type: 'checkbox' }
+          if (r.checkbox_group != null && String(r.checkbox_group).trim()) {
+            o.checkbox_group = String(r.checkbox_group).trim().slice(0, 128)
+          }
+          if (r.checkbox_option != null && String(r.checkbox_option).trim()) {
+            o.checkbox_option = String(r.checkbox_option).trim().slice(0, 256)
+          }
+          return o
         }
         return { key: r.key, input_type: 'checkbox' }
       })
@@ -170,75 +281,153 @@ export function AdminTemplateFieldsTab() {
     return (
       <div className="mx-auto max-w-xl space-y-4 px-4 py-8">
         <p className="text-sm font-semibold text-slate-800">Generated fields</p>
-        <p className="text-sm text-slate-600">
-          No <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">{'{{field_name}}'}</code> placeholders were
-          detected in the saved template yet. Save your document in the <span className="font-medium">Edit</span> tab
-          (or re-upload), then open this tab again.
-        </p>
+       
       </div>
     )
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 px-4 py-6">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated fields</p>
-        <p className="mt-1 text-sm text-slate-600">
-          One <span className="font-mono text-xs">{'{{placeholder}}'}</span> per field. Pick type per row, or use the
-          button below for an all-checkbox template (<span className="font-serif">☑</span> /{' '}
-          <span className="font-serif">☐</span> in the merged file).{' '}
-          <span className="font-medium text-slate-700">Radio:</span> rows that share the same form section (see each
-          card) are one mutually exclusive group; each placeholder is one option (value = that field's key).
-        </p>
-        <p className="mt-2 font-mono text-[11px] leading-relaxed text-slate-500">
-          doc → upload → detect rows → checkbox types → user form → merge
-        </p>
-      </div>
+    <div className="h-full min-h-0 overflow-auto bg-slate-100/60">
+      <div className="mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 sm:py-5">
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {rows.map((r, i) => (
-          <div
-            key={r.key}
-            className="flex flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-          >
-            <p className="text-sm font-semibold text-slate-900">{r.label || r.key}</p>
-            <p className="mt-0.5 font-mono text-xs text-slate-500">{r.key}</p>
-            {r.group_label ? (
-              <p className="mt-1 text-[11px] font-medium text-slate-600">Form section: {r.group_label}</p>
-            ) : null}
-            {r.placeholders?.length ? (
-              <p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={r.placeholders.join(' · ')}>
-                {r.placeholders.join(' · ')}
-              </p>
-            ) : null}
-            <label className="mt-3 block text-xs font-medium text-slate-600">
-              Type
-              <select
-                value={r.input_type || 'text'}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setRows((prev) => prev.map((x, j) => (j === i ? { ...x, input_type: v } : x)))
-                }}
-                className={`${userAreaInputClass} mt-1 !text-sm`}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {rowClusters.map((c, ci) => {
+            if (c.kind === 'checkbox_group') {
+              const head = c.options[0].row
+              const heading = radioClusterHeadingFromOptions(c.options)
+              return (
+                <div
+                  key={`cg-${ci}-${head.key}`}
+                  className="flex flex-col overflow-hidden rounded-lg border border-teal-200/80 bg-white shadow-sm sm:col-span-2 xl:col-span-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-100/90 bg-teal-50/50 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-slate-900">{heading}</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 p-2.5 sm:gap-3 sm:p-3">
+                    {c.options.map(({ row: r, rowIndex: ri }) => (
+                      <div
+                        key={r.key}
+                        className="flex min-w-[10rem] flex-1 basis-[calc(50%-0.375rem)] flex-col rounded-md border border-slate-200 bg-slate-50/50 p-2.5 sm:max-w-[20rem] sm:basis-0"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-semibold leading-snug text-slate-900">{r.label || r.key}</p>
+                        </div>
+                        <label className="mt-2 block text-[11px] font-medium text-slate-600">
+                          Type
+                          <select
+                            value={r.input_type || 'text'}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setRows((prev) => prev.map((x, j) => (j === ri ? { ...x, input_type: v } : x)))
+                            }}
+                            className={`${userAreaInputClass} mt-1 !py-2 !text-sm`}
+                          >
+                            {FIELD_TYPE_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            }
+            if (c.kind === 'radio_group') {
+              const head = c.options[0].row
+              const heading = radioClusterHeadingFromOptions(c.options)
+              const gid = inferredRadioGroup(head)
+              return (
+                <div
+                  key={`rg-${ci}-${head.key}`}
+                  className="flex flex-col overflow-hidden rounded-lg border border-indigo-200/70 bg-white shadow-sm sm:col-span-2 xl:col-span-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100/80 bg-indigo-50/50 px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                     
+                      <p className="truncate text-sm font-semibold text-slate-900">{heading}</p>
+                    </div>
+                   
+                  </div>
+                  <div className="flex flex-wrap gap-2 p-2.5 sm:gap-3 sm:p-3">
+                    {c.options.map(({ row: r, rowIndex: ri }) => (
+                      <div
+                        key={r.key}
+                        className="flex min-w-[10rem] flex-1 basis-[calc(50%-0.375rem)] flex-col rounded-md border border-slate-200 bg-slate-50/50 p-2.5 sm:max-w-[20rem] sm:basis-0"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-semibold leading-snug text-slate-900">{r.label || r.key}</p>
+                        </div>
+                       
+                      
+                        <label className="mt-2 block text-[11px] font-medium text-slate-600">
+                          Type
+                          <select
+                            value={r.input_type || 'text'}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setRows((prev) => prev.map((x, j) => (j === ri ? { ...x, input_type: v } : x)))
+                            }}
+                            className={`${userAreaInputClass} mt-1 !py-2 !text-sm`}
+                          >
+                            {FIELD_TYPE_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            }
+            const r = c.row
+            const i = c.rowIndex
+            return (
+              <div
+                key={r.key}
+                className="flex flex-col rounded-lg border border-slate-200/90 bg-white p-3 shadow-sm"
               >
-                {FIELD_TYPE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        ))}
-      </div>
+                <p className="text-sm font-semibold leading-snug text-slate-900">{r.label || r.key}</p>
+               
+              
+                <label className="mt-2 block text-[11px] font-medium text-slate-600">
+                  Type
+                  <select
+                    value={r.input_type || 'text'}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setRows((prev) => prev.map((x, j) => (j === i ? { ...x, input_type: v } : x)))
+                    }}
+                    className={`${userAreaInputClass} mt-1 !py-2 !text-sm`}
+                  >
+                    {FIELD_TYPE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )
+          })}
+        </div>
 
-      <div className="flex flex-wrap gap-3">
-        <button type="button" disabled={busy} className={btnPrimaryClass} onClick={() => void onSave()}>
-          {busy ? 'Saving…' : 'Save field types'}
-        </button>
-        <button type="button" disabled={busy} className={btnSecondaryClass} onClick={() => void onSaveAllCheckboxes()}>
-          Save all as Checkbox
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200/90 pt-4">
+          <button type="button" disabled={busy} className={btnPrimaryClass} onClick={() => void onSave()}>
+            {busy ? 'Saving…' : 'Save field types'}
+          </button>
+          {/* <button type="button" disabled={busy} className={btnSecondaryClass} onClick={() => void onSaveAllCheckboxes()}>
+            Save all as Checkbox
+          </button> */}
+        </div>
       </div>
     </div>
   )
@@ -290,7 +479,8 @@ export function AdminTemplateEditTab() {
     editFile,
     setEditFile,
     editBusy,
-    editOoKey,
+    ooEditorRevision,
+    registerOnlyOfficeDocumentKey,
     onSaveMetadata,
     onSaveDocx,
     saveDocxBusy,
@@ -303,9 +493,9 @@ export function AdminTemplateEditTab() {
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2 sm:px-4">
           <p className="text-xs text-slate-600">
             Wait for <span className="font-semibold">Opening document…</span> to finish, then click in the page and
-            type. Click <span className="font-semibold">Save</span> to store your edits, then open the{' '}
-            <span className="font-semibold">Preview</span> tab and use <span className="font-semibold">Reload</span> if
-            needed.
+            type. <span className="font-semibold">Save</span> tells OnlyOffice to push the file back to this API
+            (usually a few seconds, not instant). Then open the <span className="font-semibold">Preview</span> tab and
+            use <span className="font-semibold">Reload</span> if needed.
           </p>
           <button
             type="button"
@@ -321,7 +511,8 @@ export function AdminTemplateEditTab() {
             templateId={template.id}
             mode="edit"
             admin
-            revision={editOoKey}
+            revision={ooEditorRevision}
+            onBootstrapMeta={(m) => registerOnlyOfficeDocumentKey(m?.documentKey ?? null)}
             className="min-h-0 flex-1 rounded-none border-0 shadow-none"
           />
         </div>
@@ -369,7 +560,17 @@ export default function AdminTemplateDetail() {
   const [notFound, setNotFound] = useState(false)
   const [ooStatus, setOoStatus] = useState(null)
   const [previewRev, setPreviewRev] = useState(0)
-  const [editOoKey, setEditOoKey] = useState(0)
+  const ooSessionDocKeyRef = useRef(null)
+  const registerOnlyOfficeDocumentKey = useCallback((key) => {
+    ooSessionDocKeyRef.current = key || null
+  }, [])
+
+  const ooEditorRevision = useMemo(() => {
+    if (!detail) return '0-0'
+    const fv = Number(detail.file_version)
+    const nonce = Number(detail.oo_key_nonce)
+    return `${Number.isFinite(fv) ? fv : 0}-${Number.isFinite(nonce) ? nonce : 0}`
+  }, [detail?.file_version, detail?.oo_key_nonce])
   const [editTitle, setEditTitle] = useState('')
   const [editFile, setEditFile] = useState(null)
   const [editBusy, setEditBusy] = useState(false)
@@ -415,7 +616,7 @@ export default function AdminTemplateDetail() {
     setTemplate(null)
     setDetail(null)
     setPreviewRev(0)
-    setEditOoKey(0)
+    ooSessionDocKeyRef.current = null
     setEditFile(null)
   }, [templateId])
 
@@ -489,7 +690,6 @@ export default function AdminTemplateDetail() {
       return
     }
 
-    const replacedFile = Boolean(editFile)
     setEditBusy(true)
     try {
       const data2 = await updateAdminTemplate(template.id, {
@@ -503,12 +703,11 @@ export default function AdminTemplateDetail() {
         original_filename: data2.original_filename,
         fields_schema: data2.fields_schema || [],
         created_at: detail.created_at,
+        file_version: data2.file_version ?? detail.file_version ?? 0,
+        oo_key_nonce: data2.oo_key_nonce ?? detail.oo_key_nonce ?? 0,
       })
       setEditFile(null)
       bumpPreview()
-      if (replacedFile) {
-        setEditOoKey((k) => k + 1)
-      }
       await reload()
     } catch (ex) {
       toastError(ex.message)
@@ -521,17 +720,17 @@ export default function AdminTemplateDetail() {
     if (!template) return
     setSaveDocxBusy(true)
     try {
-      const r = await api(`/forms/admin/templates/${template.id}/onlyoffice/forcesave`, { method: 'POST' })
+      const r = await api(`/forms/admin/templates/${template.id}/onlyoffice/forcesave`, {
+        method: 'POST',
+        body: { document_key: ooSessionDocKeyRef.current },
+      })
       if (r.timed_out) {
         toastWarning(r.message || 'Save status unclear; check Preview after a few seconds.')
       } else {
         toastSuccess(r.message || 'Saved.')
       }
       bumpPreview()
-      setEditOoKey((k) => k + 1)
-      window.setTimeout(() => {
-        void reload()
-      }, 900)
+      await reload()
     } catch (ex) {
       toastError(ex.message)
     } finally {
@@ -550,7 +749,8 @@ export default function AdminTemplateDetail() {
       editFile,
       setEditFile,
       editBusy,
-      editOoKey,
+      ooEditorRevision,
+      registerOnlyOfficeDocumentKey,
       onSaveMetadata,
       onSaveDocx,
       saveDocxBusy,
@@ -564,7 +764,8 @@ export default function AdminTemplateDetail() {
       editTitle,
       editFile,
       editBusy,
-      editOoKey,
+      ooEditorRevision,
+      registerOnlyOfficeDocumentKey,
       onSaveMetadata,
       onSaveDocx,
       saveDocxBusy,
@@ -593,6 +794,9 @@ export default function AdminTemplateDetail() {
   }
 
   const docx = isDocxFilename(template.original_filename)
+  const displayLabelCount = Array.isArray(detail?.fields_schema)
+    ? countFieldLabelsFromSchema(detail.fields_schema)
+    : (template.field_count ?? 0)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -613,13 +817,14 @@ export default function AdminTemplateDetail() {
             <span
               className="rounded-md bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-800 sm:text-xs"
               title={
-                'Placeholders like {{field_name}} are counted from the last copy saved on the server ' +
+                'Number of Generated-fields cards: one per placeholder, and one per radio group ' +
+                '(not one per radio option). Count comes from the last copy saved on the server ' +
                 '(after Save in Edit, or re-upload). Unsaved editor changes are not included yet. ' +
                 'If the count stays wrong after Save, OnlyOffice must be able to reach your app ' +
                 '(PUBLIC_APP_URL / callback URL).'
               }
             >
-              {(detail?.fields_schema?.length ?? template.field_count) ?? 0} fields
+              {displayLabelCount} label{displayLabelCount === 1 ? '' : 's'}
             </span>
             {docx && (
               <span className="rounded-md bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-900 sm:text-xs">

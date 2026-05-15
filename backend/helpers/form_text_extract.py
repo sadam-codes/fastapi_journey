@@ -1,6 +1,6 @@
 import io
 import zipfile
-from typing import Final
+from typing import Any, Final
 
 from fastapi import HTTPException, status
 from PIL import Image
@@ -40,26 +40,48 @@ def extract_text_from_docx(raw: bytes) -> str:
             detail="DOCX support is not available on the server.",
         ) from exc
 
+    def _paragraph_plain_with_breaks_and_tabs(paragraph: Any) -> str:
+        """Match merge-time text: include tab stops and soft line breaks (``<w:br/>`` → ``\\n``)."""
+        try:
+            from docx.oxml.ns import qn
+        except ImportError:
+            return "".join(r.text for r in paragraph.runs)
+
+        bits: list[str] = []
+        for run in paragraph.runs:
+            for child in list(run._element):
+                t = child.tag
+                if t == qn("w:t"):
+                    bits.append(child.text or "")
+                elif t == qn("w:tab"):
+                    bits.append("\t")
+                elif t == qn("w:br"):
+                    bits.append("\n")
+        out = "".join(bits)
+        if out == "" and paragraph.text:
+            return "".join(r.text for r in paragraph.runs)
+        return out
+
     doc = Document(io.BytesIO(raw))
     parts: list[str] = []
     for p in doc.paragraphs:
-        parts.append("".join(r.text for r in p.runs))
+        parts.append(_paragraph_plain_with_breaks_and_tabs(p))
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    parts.append("".join(r.text for r in p.runs))
+                    parts.append(_paragraph_plain_with_breaks_and_tabs(p))
     for sec in doc.sections:
         for hf in (sec.header, sec.footer):
             if hf is None:
                 continue
             for p in hf.paragraphs:
-                parts.append("".join(r.text for r in p.runs))
+                parts.append(_paragraph_plain_with_breaks_and_tabs(p))
             for table in hf.tables:
                 for row in table.rows:
                     for cell in row.cells:
                         for p in cell.paragraphs:
-                            parts.append("".join(r.text for r in p.runs))
+                            parts.append(_paragraph_plain_with_breaks_and_tabs(p))
     return "\n".join(parts)
 
 

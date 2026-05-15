@@ -11,7 +11,7 @@ export default function Home() {
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Templates & merge</p>
         <h1 className="mt-2 text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">Form workflow</h1>
         <p className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-slate-600 sm:mx-0">
-          Admins upload PDF, DOCX, or images with <code className={codeClass}>{'{{placeholders}}'}</code>. People
+          Admins upload PDF, DOCX, or images with <code className={codeClass}>{'{placeholders}'}</code>. People
           sign in, fill only those fields, and download the merged file.
         </p>
         <p className="mt-6">
@@ -31,7 +31,7 @@ export default function Home() {
         >
           <h2 className="text-lg font-bold text-slate-900 group-hover:text-indigo-900">Admin</h2>
           <p className="mt-3 text-sm leading-relaxed text-slate-600">
-            Upload templates; only <code className={codeClass}>{'{{field_name}}'}</code> in the document becomes a
+            Upload templates; only <code className={codeClass}>{'{field_name}'}</code> in the document becomes a
             form field. Manage uploads on separate tabs after login.
           </p>
           <span className="mt-5 inline-flex items-center text-sm font-semibold text-indigo-600 group-hover:text-indigo-500">

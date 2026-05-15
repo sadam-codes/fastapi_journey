@@ -69,7 +69,9 @@ export default function UserForms() {
                     <span className="block font-semibold text-slate-900 group-hover:text-indigo-800">
                       {r.title}
                     </span>
-                    <span className="mt-1 block text-sm text-slate-600">{r.field_count} fields to fill</span>
+                    <span className="mt-1 block text-sm text-slate-600">
+                      {r.field_count} label{r.field_count === 1 ? '' : 's'} to fill
+                    </span>
                   </Link>
                 </li>
               ))}

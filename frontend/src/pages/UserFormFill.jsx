@@ -14,7 +14,7 @@ import {
 const W = 400
 const H = 160
 
-function SignaturePad({ value, onChange, disabled }) {
+function SignaturePad({ value, onChange, disabled, ariaLabel }) {
   const canvasRef = useRef(null)
   const drawing = useRef(false)
   const stroked = useRef(false)
@@ -126,6 +126,7 @@ function SignaturePad({ value, onChange, disabled }) {
     <div className="mt-1.5 space-y-2">
       <canvas
         ref={canvasRef}
+        aria-label={ariaLabel || 'Signature'}
         className="touch-none rounded-lg border border-slate-300 bg-white shadow-inner"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -151,6 +152,14 @@ function inputTypeOf(f) {
   return t
 }
 
+function fieldCaption(f) {
+  return f.label || f.key
+}
+
+function stableFieldDomId(f) {
+  return `ff-${String(f.key).replace(/[^a-zA-Z0-9_-]/g, '_')}`
+}
+
 /** Buckets fields so checkboxes and radios are not merged into one row under the same doc section title. */
 function clusterBucket(f) {
   const it = inputTypeOf(f)
@@ -168,16 +177,22 @@ function clusterMergeKey(f) {
     const rg = (f.radio_group && String(f.radio_group).trim()) || f.key
     return `${g}|radio|${rg}`
   }
+  if (b === 'checkbox') {
+    const cg = f.checkbox_group != null && String(f.checkbox_group).trim()
+    if (cg) return `${g}|checkbox|${cg}`
+  }
   return `${g}|${b}`
 }
 
-function renderFieldControl(f, answers, setField, disabled) {
+function renderFieldControl(f, answers, setField, disabled, fieldId, opts = {}) {
   const it = inputTypeOf(f)
   const v = answers[f.key] ?? ''
+  const inlineRadio = opts.inlineRadioGroup === true
 
   if (it === 'textarea') {
     return (
       <textarea
+        id={fieldId}
         value={v}
         onChange={(e) => setField(f.key, e.target.value)}
         placeholder={f.placeholders?.[0] || f.key}
@@ -190,47 +205,59 @@ function renderFieldControl(f, answers, setField, disabled) {
   }
 
   if (it === 'checkbox') {
-    return (
-      <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-sm font-normal text-slate-700">
-        <input
-          type="checkbox"
-          checked={v === 'true'}
-          onChange={(e) => setField(f.key, e.target.checked ? 'true' : '')}
-          required={f.required === true}
-          disabled={disabled}
-          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-        />
-        {f.checkbox_hint ? <span className="text-slate-600">{f.checkbox_hint}</span> : null}
-      </label>
+    const input = (
+      <input
+        id={fieldId}
+        type="checkbox"
+        checked={v === 'true'}
+        onChange={(e) => setField(f.key, e.target.checked ? 'true' : '')}
+        required={f.required === true}
+        disabled={disabled}
+        className="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+      />
     )
+    if (inlineRadio) {
+      return input
+    }
+    return <div className="mt-1.5 flex items-center gap-2">{input}</div>
   }
 
   if (it === 'radio') {
     const rg = (f.radio_group && String(f.radio_group).trim()) || f.key
     const optVal = (f.radio_option != null && String(f.radio_option).trim()) || f.key
     const cur = answers[rg] ?? ''
-    return (
-      <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-sm font-normal text-slate-700">
-        <input
-          type="radio"
-          name={rg}
-          value={optVal}
-          checked={cur === optVal}
-          onChange={() => setField(rg, optVal)}
-          required={f.required === true}
-          disabled={disabled}
-          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-        />
-        {f.checkbox_hint ? <span className="text-slate-600">{f.checkbox_hint}</span> : null}
-      </label>
+    const input = (
+      <input
+        id={fieldId}
+        type="radio"
+        name={rg}
+        value={optVal}
+        checked={cur === optVal}
+        onChange={() => setField(rg, optVal)}
+        required={f.required === true}
+        disabled={disabled}
+        className="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+      />
     )
+    if (inlineRadio) {
+      return input
+    }
+    return <div className="mt-1.5 flex items-center gap-2">{input}</div>
   }
 
   if (it === 'signature') {
-    return <SignaturePad value={v} onChange={(dataUrl) => setField(f.key, dataUrl)} disabled={disabled} />
+    return (
+      <SignaturePad
+        value={v}
+        onChange={(dataUrl) => setField(f.key, dataUrl)}
+        disabled={disabled}
+        ariaLabel={fieldCaption(f)}
+      />
+    )
   }
 
   const common = {
+    id: fieldId,
     value: v,
     onChange: (e) => setField(f.key, e.target.value),
     placeholder: f.placeholders?.[0] || f.key,
@@ -341,9 +368,12 @@ export default function UserFormFill() {
     }
   }
 
+  const formLayoutMax = 'w-full max-w-6xl 2xl:max-w-7xl'
+  const formLayoutPad = 'px-4 sm:px-6 lg:px-10'
+
   if (!detail && !loadFailed) {
     return (
-      <UserAreaLayout wide centerContent>
+      <UserAreaLayout wide centerContent maxWidthClass={formLayoutMax} paddingClass={formLayoutPad}>
         <GlassCard>
           <p className="text-center text-sm text-slate-600">Loading…</p>
         </GlassCard>
@@ -353,7 +383,7 @@ export default function UserFormFill() {
 
   if (loadFailed && !detail) {
     return (
-      <UserAreaLayout wide centerContent={false}>
+      <UserAreaLayout wide centerContent={false} maxWidthClass={formLayoutMax} paddingClass={formLayoutPad}>
         <GlassCard>
           <p className="text-sm text-slate-700">This form could not be loaded.</p>
           <Link
@@ -371,7 +401,7 @@ export default function UserFormFill() {
 
   if (fields.length === 0) {
     return (
-      <UserAreaLayout wide centerContent={false}>
+      <UserAreaLayout wide centerContent={false} maxWidthClass={formLayoutMax} paddingClass={formLayoutPad}>
         <GlassCard>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Form</p>
           <h1 className="mt-1 text-xl font-bold text-slate-900">{detail.title}</h1>
@@ -390,49 +420,116 @@ export default function UserFormFill() {
   }
 
   return (
-    <UserAreaLayout wide centerContent={false}>
-      <GlassCard className="max-w-3xl">
+    <UserAreaLayout wide centerContent={false} maxWidthClass={formLayoutMax} paddingClass={formLayoutPad}>
+      <GlassCard className="w-full">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Form</p>
         <h1 className="mt-1 text-xl font-bold text-slate-900">{detail.title}</h1>
         <p className="mt-1 text-sm text-slate-500">Fill the fields below for this form only.</p>
 
         <form className="mt-6 flex flex-col gap-7" onSubmit={onSubmit}>
           {fieldClusters.map((cluster, ci) => {
-            const rowLayout = cluster.groupHeading && cluster.fields.length > 1
+            const isRadioCluster =
+              cluster.fields.length >= 2 && cluster.fields.every((f) => inputTypeOf(f) === 'radio')
+            const cg0 = cluster.fields[0]?.checkbox_group
+            const isCheckboxMultiCluster =
+              cluster.fields.length >= 2 &&
+              cluster.fields.every((f) => inputTypeOf(f) === 'checkbox') &&
+              cg0 != null &&
+              String(cg0).trim() &&
+              cluster.fields.every(
+                (f) => String(f.checkbox_group || '').trim() === String(cg0).trim(),
+              )
+            const isChoiceRowCluster = isRadioCluster || isCheckboxMultiCluster
+            const rowLayout =
+              cluster.groupHeading && cluster.fields.length > 1 && !isChoiceRowCluster
             return (
               <div
                 key={`cluster-${ci}`}
                 className={`text-sm text-slate-800 ${cluster.suppressHeading ? 'mt-5 border-t border-slate-100 pt-4' : ''}`}
               >
-                {cluster.groupHeading && !cluster.suppressHeading ? (
-                  <p className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-semibold leading-snug text-slate-900">
-                    {cluster.groupHeading}
-                  </p>
-                ) : null}
-                {rowLayout ? (
-                  <div className="grid grid-cols-2 items-end gap-x-5 gap-y-4 font-medium sm:grid-cols-4">
-                    {cluster.fields.map((f) => (
-                      <div key={f.key} className="min-w-0">
-                        <span className="block text-xs font-medium text-slate-700">{f.label}</span>
-                        {inputTypeOf(f) === 'signature' ? (
-                          <p className="mt-0.5 text-xs font-normal text-slate-500">
-                            Sign with mouse or touch
-                          </p>
-                        ) : null}
-                        <div className="mt-1.5 font-normal">{renderFieldControl(f, answers, setField, busy)}</div>
-                      </div>
-                    ))}
+                {isChoiceRowCluster ? (
+                  <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+                    {cluster.groupHeading && !cluster.suppressHeading ? (
+                      <span className="shrink-0 text-sm font-semibold leading-snug text-slate-900">
+                        {cluster.groupHeading}
+                      </span>
+                    ) : null}
+                    {cluster.fields.map((f) => {
+                      const fid = stableFieldDomId(f)
+                      const cap = fieldCaption(f)
+                      return (
+                        <label
+                          key={f.key}
+                          htmlFor={fid}
+                          className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800"
+                        >
+                          {renderFieldControl(f, answers, setField, busy, fid, { inlineRadioGroup: true })}
+                          <span className="select-none whitespace-pre-wrap">{cap}</span>
+                        </label>
+                      )
+                    })}
                   </div>
                 ) : (
-                  cluster.fields.map((f) => (
-                    <div key={f.key} className="font-medium">
-                      <span>{f.label}</span>
-                      {inputTypeOf(f) === 'signature' ? (
-                        <p className="mt-0.5 text-xs font-normal text-slate-500">Sign with mouse or touch</p>
-                      ) : null}
-                      <div className="mt-1.5 font-normal">{renderFieldControl(f, answers, setField, busy)}</div>
-                    </div>
-                  ))
+                  <>
+                    {cluster.groupHeading && !cluster.suppressHeading ? (
+                      <p className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-semibold leading-snug text-slate-900">
+                        {cluster.groupHeading}
+                      </p>
+                    ) : null}
+                    {rowLayout ? (
+                  <div className="grid grid-cols-2 items-end gap-x-5 gap-y-4 font-medium sm:grid-cols-4">
+                    {cluster.fields.map((f) => {
+                      const fid = stableFieldDomId(f)
+                      const cap = fieldCaption(f)
+                      const sig = inputTypeOf(f) === 'signature'
+                      return (
+                        <div key={f.key} className="min-w-0">
+                          {sig ? (
+                            <span className="block text-xs font-medium text-slate-700 whitespace-pre-line">{cap}</span>
+                          ) : (
+                            <label
+                              htmlFor={fid}
+                              className="block cursor-pointer text-xs font-medium text-slate-700 whitespace-pre-line"
+                            >
+                              {cap}
+                            </label>
+                          )}
+                          {sig ? (
+                            <p className="mt-0.5 text-xs font-normal text-slate-500">Sign with mouse or touch</p>
+                          ) : null}
+                          <div className="mt-1.5 font-normal">
+                            {renderFieldControl(f, answers, setField, busy, fid)}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  cluster.fields.map((f) => {
+                    const fid = stableFieldDomId(f)
+                    const cap = fieldCaption(f)
+                    const sig = inputTypeOf(f) === 'signature'
+                    return (
+                      <div key={f.key} className="font-medium">
+                        {sig ? (
+                          <span className="block text-sm font-medium text-slate-900 whitespace-pre-line">{cap}</span>
+                        ) : (
+                          <label
+                            htmlFor={fid}
+                            className="block cursor-pointer text-sm font-medium text-slate-900 whitespace-pre-line"
+                          >
+                            {cap}
+                          </label>
+                        )}
+                        {sig ? (
+                          <p className="mt-0.5 text-xs font-normal text-slate-500">Sign with mouse or touch</p>
+                        ) : null}
+                        <div className="mt-1.5 font-normal">{renderFieldControl(f, answers, setField, busy, fid)}</div>
+                      </div>
+                    )
+                  })
+                )}
+                  </>
                 )}
               </div>
             )
@@ -448,42 +545,7 @@ export default function UserFormFill() {
         </form>
       </GlassCard>
 
-      {detail && (
-        <GlassCard className="mt-6 overflow-hidden p-0">
-          <button
-            type="button"
-            onClick={() => {
-              setPreviewOpen((o) => {
-                if (!o) setPreviewRev((r) => r + 1)
-                return !o
-              })
-            }}
-            className="flex w-full items-center justify-between px-6 py-4 text-left text-sm font-semibold text-slate-800 transition hover:bg-slate-50/80"
-          >
-            <span>Template preview</span>
-            <span className="text-xs font-medium text-indigo-600">{previewOpen ? 'Hide' : 'Show'}</span>
-          </button>
-          {previewOpen && (
-            <div className="border-t border-slate-200/80 bg-slate-50/40 px-4 py-4 sm:px-6 sm:py-5">
-              <div className="mb-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setPreviewRev((r) => r + 1)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-indigo-200 hover:text-indigo-800"
-                >
-                  Reload
-                </button>
-              </div>
-              <DocumentPreview
-                templateId={Number(id)}
-                filename={detail.original_filename}
-                revision={previewRev}
-                onlyOfficeAdmin={false}
-              />
-            </div>
-          )}
-        </GlassCard>
-      )}
+
 
       <p className="mt-8 text-center text-sm text-slate-500 sm:text-left">
         <Link to="/user/forms" className="font-medium text-indigo-600 hover:text-indigo-500 hover:underline">

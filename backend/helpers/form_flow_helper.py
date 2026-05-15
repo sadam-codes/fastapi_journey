@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from helpers.form_field_detect import (
     ALLOWED_INPUT_TYPES,
+    count_field_schema_display_groups,
     detect_dynamic_fields,
     merge_detected_with_saved_input_types,
     normalize_field_schema,
@@ -84,7 +85,7 @@ async def admin_upload_template(
     if not text.strip():
         raise HTTPException(
             status_code=400,
-            detail="No extractable text found. Add visible placeholders (e.g. {{client_name}}) or use OCR-friendly images.",
+            detail="No extractable text found. Add visible placeholders (e.g. {client_name}) or use OCR-friendly images.",
         )
     schema = normalize_field_schema(detect_dynamic_fields(text))
     stem = (filename or "template").rsplit(".", 1)[0].strip() or "template"
@@ -99,7 +100,7 @@ async def admin_upload_template(
     )
     msg = "Template saved."
     if schema:
-        msg = "Template saved. Fill-in fields come from {{field_name}} placeholders in the text."
+        msg = "Template saved. Fill-in fields come from {field_name} placeholders in the text."
     return UploadResponse(
         id=doc.id,
         title=doc.title,
@@ -107,6 +108,8 @@ async def admin_upload_template(
         fields_schema=schema,
         char_count=len(text),
         message=msg,
+        file_version=int(getattr(doc, "file_version", None) or 0),
+        oo_key_nonce=int(getattr(doc, "oo_key_nonce", None) or 0),
     )
 
 
@@ -140,6 +143,8 @@ async def admin_update_template(
                 fields_schema=normalize_field_schema(list(t.fields_schema or [])),
                 char_count=len(t.extracted_text or ""),
                 message="No changes.",
+                file_version=int(getattr(t, "file_version", None) or 0),
+                oo_key_nonce=int(getattr(t, "oo_key_nonce", None) or 0),
             )
         t.title = title_clean[:255]
         await t.save()
@@ -150,6 +155,8 @@ async def admin_update_template(
             fields_schema=normalize_field_schema(list(t.fields_schema or [])),
             char_count=len(t.extracted_text or ""),
             message="Title updated.",
+            file_version=int(getattr(t, "file_version", None) or 0),
+            oo_key_nonce=int(getattr(t, "oo_key_nonce", None) or 0),
         )
 
     if not filename:
@@ -163,7 +170,7 @@ async def admin_update_template(
     if not text.strip():
         raise HTTPException(
             status_code=400,
-            detail="No extractable text found. Add visible placeholders (e.g. {{client_name}}) or use OCR-friendly images.",
+            detail="No extractable text found. Add visible placeholders (e.g. {client_name}) or use OCR-friendly images.",
         )
     detected = detect_dynamic_fields(text)
     schema = normalize_field_schema(merge_detected_with_saved_input_types(list(t.fields_schema or []), detected))
@@ -178,7 +185,7 @@ async def admin_update_template(
 
     msg = "Template file replaced."
     if schema:
-        msg = "Template file replaced. Fill-in fields follow {{field_name}} placeholders in the text."
+        msg = "Template file replaced. Fill-in fields follow {field_name} placeholders in the text."
     return UploadResponse(
         id=t.id,
         title=t.title,
@@ -186,6 +193,8 @@ async def admin_update_template(
         fields_schema=schema,
         char_count=len(text),
         message=msg,
+        file_version=int(getattr(t, "file_version", None) or 0),
+        oo_key_nonce=int(getattr(t, "oo_key_nonce", None) or 0),
     )
 
 
@@ -196,7 +205,7 @@ async def admin_list_templates() -> list[TemplateListItem]:
             id=r.id,
             title=r.title,
             original_filename=r.original_filename,
-            field_count=len(r.fields_schema or []),
+            field_count=count_field_schema_display_groups(list(r.fields_schema or [])),
             created_at=r.created_at,
         )
         for r in rows
@@ -213,6 +222,8 @@ async def admin_get_template_detail(template_id: int) -> TemplateDetailResponse:
         original_filename=t.original_filename,
         fields_schema=normalize_field_schema(list(t.fields_schema or [])),
         created_at=t.created_at,
+        file_version=int(getattr(t, "file_version", None) or 0),
+        oo_key_nonce=int(getattr(t, "oo_key_nonce", None) or 0),
     )
 
 
@@ -239,6 +250,10 @@ async def admin_patch_template_field_types(
             )
         by_key[key]["input_type"] = it
         if it == "radio":
+            by_key[key].pop("checkbox_group", None)
+            by_key[key].pop("checkbox_option", None)
+            by_key[key].pop("checkbox_question_id", None)
+            by_key[key].pop("checkbox_option_keys", None)
             rg = item.get("radio_group")
             if rg is not None:
                 by_key[key]["radio_group"] = str(rg).strip()[:128] if str(rg).strip() else None
@@ -249,9 +264,30 @@ async def admin_patch_template_field_types(
                 by_key[key]["radio_option"] = str(ro).strip()[:256] if str(ro).strip() else None
                 if not by_key[key]["radio_option"]:
                     by_key[key].pop("radio_option", None)
+        elif it == "checkbox":
+            by_key[key].pop("radio_group", None)
+            by_key[key].pop("radio_option", None)
+            by_key[key].pop("radio_question_id", None)
+            by_key[key].pop("radio_option_keys", None)
+            cg = item.get("checkbox_group")
+            if cg is not None:
+                by_key[key]["checkbox_group"] = str(cg).strip()[:128] if str(cg).strip() else None
+                if not by_key[key].get("checkbox_group"):
+                    by_key[key].pop("checkbox_group", None)
+            co = item.get("checkbox_option")
+            if co is not None:
+                by_key[key]["checkbox_option"] = str(co).strip()[:256] if str(co).strip() else None
+                if not by_key[key].get("checkbox_option"):
+                    by_key[key].pop("checkbox_option", None)
         else:
             by_key[key].pop("radio_group", None)
             by_key[key].pop("radio_option", None)
+            by_key[key].pop("radio_question_id", None)
+            by_key[key].pop("radio_option_keys", None)
+            by_key[key].pop("checkbox_group", None)
+            by_key[key].pop("checkbox_option", None)
+            by_key[key].pop("checkbox_question_id", None)
+            by_key[key].pop("checkbox_option_keys", None)
     new_schema = [normalize_field_schema([by_key[str(r["key"])]])[0] for r in current_list if r.get("key")]
     t.fields_schema = new_schema
     await t.save()
@@ -267,7 +303,7 @@ async def admin_delete_template(template_id: int) -> dict[str, Any]:
 
 
 async def admin_template_download_response(template_id: int) -> StreamingResponse:
-    """Original file for admins to download, edit locally (e.g. add {{fields}}), and re-upload."""
+    """Original file for admins to download, edit locally (e.g. add {fields}), and re-upload."""
     t = await FormTemplate.get_or_none(id=template_id)
     if not t:
         raise HTTPException(status_code=404, detail="Form template not found.")
@@ -295,7 +331,7 @@ async def list_templates_for_fill_role(user: dict) -> list[TemplateListItem]:
             id=r.id,
             title=r.title,
             original_filename=r.original_filename,
-            field_count=len(r.fields_schema or []),
+            field_count=count_field_schema_display_groups(list(r.fields_schema or [])),
             created_at=r.created_at,
         )
         for r in rows
@@ -313,6 +349,8 @@ async def get_template_detail(template_id: int, user: dict) -> TemplateDetailRes
         original_filename=t.original_filename,
         fields_schema=normalize_field_schema(list(t.fields_schema or [])),
         created_at=t.created_at,
+        file_version=int(getattr(t, "file_version", None) or 0),
+        oo_key_nonce=int(getattr(t, "oo_key_nonce", None) or 0),
     )
 
 

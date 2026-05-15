@@ -1,4 +1,5 @@
 import bcrypt
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -13,6 +14,11 @@ from models.user import User
 
 load_dotenv()
 JWT_SECRET = os.getenv("JWT_SECRET")
+# HS256: PyJWT warns if the raw secret is under 32 bytes. Derive a 32-byte key from any
+# non-empty JWT_SECRET so dev short values still work without InsecureKeyLengthWarning.
+JWT_SIGNING_KEY: bytes | None = (
+    hashlib.sha256(JWT_SECRET.encode("utf-8")).digest() if JWT_SECRET else None
+)
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -26,7 +32,7 @@ def is_password_valid(stored_password_hash: str, incoming_password: str) -> bool
 
 
 def create_access_token(user_id: int, email: str, role: str) -> str:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise RuntimeError("JWT_SECRET is missing in environment variables.")
     now = datetime.now(timezone.utc)
     payload = {
@@ -36,7 +42,7 @@ def create_access_token(user_id: int, email: str, role: str) -> str:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).timestamp()),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, JWT_SIGNING_KEY, algorithm=JWT_ALGORITHM)
 
 
 def _extract_token_from_auth_header(authorization: str | None) -> str:
@@ -55,10 +61,10 @@ def _extract_token_from_auth_header(authorization: str | None) -> str:
 
 
 def decode_access_token(token: str) -> dict:
-    if not JWT_SECRET:
+    if not JWT_SECRET or JWT_SIGNING_KEY is None:
         raise RuntimeError("JWT_SECRET is missing in environment variables.")
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SIGNING_KEY, algorithms=[JWT_ALGORITHM])
         if "sub" not in payload or "email" not in payload or "role" not in payload:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

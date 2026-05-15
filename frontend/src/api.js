@@ -172,7 +172,7 @@ export async function updateAdminTemplate(templateId, { title = '', file = null 
   return data
 }
 
-/** Admin: set input_type (datatype) for each generated {{}} field. */
+/** Admin: set input_type (datatype) for each generated {field} from the template. */
 export async function patchAdminTemplateFieldTypes(templateId, { fields }) {
   return api(`/forms/admin/templates/${templateId}/field-types`, {
     method: 'PATCH',
